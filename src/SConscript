@@ -1,0 +1,7 @@
+Import('env')
+
+SConscript(['GUI/GResource/SConscript'])
+
+env.Program(target='escher', source=['main.cpp', 'GUI/MainWindow.c', 'GUI/GResource/escher.gresource.c'])
+env.ParseConfig('pkg-config --libs --cflags gtk4')
+

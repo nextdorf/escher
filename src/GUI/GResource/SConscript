@@ -1,0 +1,25 @@
+Import('env')
+cwd = Dir('.').srcnode().path
+
+uiHeader = Builder(
+  action=f'glib-compile-resources --generate-header $SOURCE --target $TARGET --sourcedir {cwd}',
+  src_suffix='.gresource.xml',
+  suffix='.gresource.h' )
+uiSource = Builder(
+  action=f'glib-compile-resources --generate-source $SOURCE --target $TARGET --sourcedir {cwd}',
+  src_suffix='.gresource.xml',
+  suffix='.gresource.c' )
+env.Append(BUILDERS={'UIHeader': uiHeader, 'UISource': uiSource})
+
+def uiScannerFn(node, env, path, arg):
+  out, err = Popen(f'glib-compile-resources --generate-dependencies {str(node)}', cwd=cwd)
+  return env.File(out.split())
+uiScanner = Scanner(function=uiScannerFn, skeys=['.gresource.xml'])
+env.Append(SCANNERS=uiScanner)
+
+def compileUI(resFile : str):
+  env.UIHeader(resFile)
+  env.UISource(resFile)
+
+compileUI('escher.gresource.xml')
+
