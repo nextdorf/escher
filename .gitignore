@@ -37,4 +37,5 @@
 *-build*
 .sconsign.dblite
 .vscode
+*.ui#
 
