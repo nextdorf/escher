@@ -1,6 +1,6 @@
 use std::path;
-
-use video;
+use eframe::egui;
+use crate::video;
 
 
 trait VisibleT<T> {

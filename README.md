@@ -4,7 +4,7 @@ FOSS Video editor
 
 ## Build
 Call in the root directory:
-```
-scons
+```bash
+cargo build
 ```
 It will compile `escher` in `build/`
