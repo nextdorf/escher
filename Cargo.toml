@@ -6,8 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eframe = { version = "*", features = ["wgpu"]}
 bytemuck = "*"
+# egui-wgpu = "*"
+egui-winit = "*"
+# egui = "*"
+# winit = "*"
+wgpu = "*"
+epaint = {version="*", features = ["bytemuck"]}
+pollster = "*"
+env_logger = "*"
+
 image = "*"
 escher_video = { path = "src/video", version = "*" }
 
