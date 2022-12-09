@@ -70,6 +70,30 @@ pub fn epaint_vertex_buffer_description<'a>() -> wgpu::VertexBufferLayout<'a> {
   }
 }
 
+
+fn map_image_delta<F, T>(img_delta: &epaint::ImageDelta, f: F) -> T
+  where F: FnOnce(&[u8]) -> T
+{
+  let font_gamma = 1.;
+
+  let pixel_data: &[u8];
+  let pixel_data_store: Vec<_>;
+  pixel_data = match &img_delta.image {
+    egui_winit::egui::ImageData::Color(img) => {
+      bytemuck::cast_slice(img.pixels.as_slice())
+    },
+    egui_winit::egui::ImageData::Font(img) => {
+      pixel_data_store = img.pixels.iter().flat_map(|gamma| {
+        let val = (gamma.powf(font_gamma/2.2)*255.).round() as _;
+        [val, val, val, val]
+      }).collect();
+      pixel_data_store.as_slice()
+    },
+  };
+
+  f(pixel_data)
+}
+
 impl WgpuState {
   pub fn new(window: &Window, surface_scale: f32) -> Option<Self> {
     let (device, queue, surface, surface_config) = Self::setup_wgpu(window)?;
@@ -273,99 +297,64 @@ impl WgpuState {
     })
   }
 
-  fn redraw_alloc_new_textures(&self, texture_delta_set: &Vec<(TextureId, epaint::ImageDelta)>) -> Vec<(TextureId, wgpu::Texture, wgpu::BindGroup)> {
+  fn redraw_alloc_new_texture_data(&self, texture_delta_set: Vec<(TextureId, epaint::ImageDelta)>)
+    -> (Vec<(TextureId, wgpu::Texture, wgpu::BindGroup)>, Vec<(TextureId, [usize; 2], epaint::ImageDelta)>)
+  {
     use egui_winit::egui;
-    let font_gamma = 1.;
 
-    let mut res = Vec::with_capacity(texture_delta_set.len());
-    for (texture_id, img_delta) in texture_delta_set.iter() {
-      if img_delta.pos.is_some() {
+    let mut res_full = Vec::with_capacity(texture_delta_set.len());
+    let mut res_partial = Vec::with_capacity(texture_delta_set.len());
+    for (texture_id, img_delta) in texture_delta_set {
+      if let Some(pos) = img_delta.pos {
+        // wgpu::Texture
         //FIXME
-        eprintln!("Not sure where to place {:?}...", dbg!(texture_id));
-      }
-      let pixel_data;
-      let pixel_data_store: Vec<_>;
-      let rgba8_to_surface_format = if self.surface_config.format.describe().srgb {
+        // eprintln!("Not sure where to place {:?}...", dbg!(texture_id));
+        res_partial.push((texture_id, pos, img_delta));
+      } else {
+        let rgba8_to_surface_format = if self.surface_config.format.describe().srgb {
           wgpu::TextureFormat::Rgba8UnormSrgb
         } else {
           wgpu::TextureFormat::Rgba8Unorm
         };
-      pixel_data = match &img_delta.image {
-        egui::ImageData::Color(img) => bytemuck::cast_slice(img.pixels.as_slice()),
-        egui::ImageData::Font(img) => {
-          pixel_data_store = img.pixels.iter().flat_map(|gamma| {
-            let val = (gamma.powf(font_gamma/2.2)*255.).round() as _;
-            [val, val, val, val]
-          }).collect();
-          pixel_data_store.as_slice()
-        },
-      };
 
-      //Expects unmultiplied RGBA and wgsl will see unmultiplied sRGBA
-      let tex = self.device.create_texture_with_data(
-        &self.queue,
-        &wgpu::TextureDescriptor {
-          label: Some(format!("Texture {:?}", texture_id).as_str()),
-          size: wgpu::Extent3d {
-            width: img_delta.image.width() as _,
-            height: img_delta.image.height() as _,
-            depth_or_array_layers: 1
-          },
-          mip_level_count: 1,
-          sample_count: 1,
-          dimension: wgpu::TextureDimension::D2,
-          format: rgba8_to_surface_format,
-          usage: wgpu::TextureUsages::TEXTURE_BINDING //COPY_DST is added automatically
-        },
-        pixel_data
-      );
+        //Expects unmultiplied RGBA and wgsl will see unmultiplied sRGBA
+        let tex = map_image_delta(&img_delta, |pixel_data|
+          self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+              label: Some(format!("Texture {:?}", texture_id).as_str()),
+              size: wgpu::Extent3d {
+                width: img_delta.image.width() as _,
+                height: img_delta.image.height() as _,
+                depth_or_array_layers: 1
+              },
+              mip_level_count: 1,
+              sample_count: 1,
+              dimension: wgpu::TextureDimension::D2,
+              format: rgba8_to_surface_format,
+              usage: wgpu::TextureUsages::TEXTURE_BINDING //COPY_DST is added automatically
+            },
+            pixel_data
+        ));
 
-      let tex_filter = match img_delta.filter {
-        egui::TextureFilter::Nearest => wgpu::FilterMode::Nearest,
-        egui::TextureFilter::Linear => wgpu::FilterMode::Linear,
-      };
-      let tex_binding = self.new_surface_update_binding(texture_id, &tex, tex_filter);
+        let tex_filter = match img_delta.filter {
+          egui::TextureFilter::Nearest => wgpu::FilterMode::Nearest,
+          egui::TextureFilter::Linear => wgpu::FilterMode::Linear,
+        };
+        let tex_binding = self.new_surface_update_binding(&texture_id, &tex, tex_filter);
 
-      // self.textures.insert(texture_id.clone(), (tex, tex_binding));
-      res.push((texture_id.clone(), tex, tex_binding));
+        // self.textures.insert(texture_id.clone(), (tex, tex_binding));
+        res_full.push((texture_id, tex, tex_binding));
+      }
     }
 
-    res
-
+    (res_full, res_partial)
   }
 
-  pub fn redraw(&mut self, f: impl FnOnce() -> (TexturesDelta, Vec<ClippedPrimitive>)) -> Option<()> {
+  fn redraw_render_deltas(&self, encoder: &mut wgpu::CommandEncoder, paint_jobs: &Vec<ClippedPrimitive>, current_frame: &wgpu::SurfaceTexture, window_size_bind_group: &wgpu::BindGroup) -> Option<()> {
     use egui_winit::egui::epaint::Primitive;
-    let current_frame = self.surface.get_current_texture().ok()?;
-    let (texture_delta, paint_jobs) = f();
-
-    let window_size_bind_group_store;
-    let window_size_bind_group = match self.window_size_bind_group.as_ref() {
-      Some(bind_group) => bind_group,
-      None => {
-          window_size_bind_group_store = self.create_window_size_bind_group();
-          &window_size_bind_group_store
-        }
-    };
-
-    //Alloc new textures
-    let new_textures = self.redraw_alloc_new_textures(&texture_delta.set);
-    for (id, tex, tex_binding) in new_textures {
-      self.textures.insert(id, (tex, tex_binding));
-    }
-
-    wgpu::ImageCopyTexture {
-      texture,
-      mip_level: 0,
-      origin,
-      aspect: wgpu::TextureAspect::All,
-    };
-
-    //Render deltas
     let current_view = current_frame.texture.create_view(
       &TextureViewDescriptor::default());
-    let mut encoder = self.device.create_command_encoder(
-      &CommandEncoderDescriptor { label: Some("current_frame_redraw_encoder") });
     let mut vertex_buffers = Vec::with_capacity(paint_jobs.len());
     let mut vert_inds_buffers = Vec::with_capacity(paint_jobs.len());
 
@@ -420,7 +409,49 @@ impl WgpuState {
       render_pass.set_index_buffer(vert_inds_buffer.slice(..), wgpu::IndexFormat::Uint32);
       render_pass.draw_indexed(0..mesh.indices.len() as _, 0, 0..1);
     }
+    Some(())
+  }
 
+
+  fn redraw_render_patches(&self, encoder: &mut wgpu::CommandEncoder, patches: &Vec<(TextureId, [usize; 2], epaint::ImageDelta)>) -> Option<()>{
+    Some(())
+  }
+
+
+  pub fn redraw(&mut self, f: impl FnOnce() -> (TexturesDelta, Vec<ClippedPrimitive>)) -> Option<()> {
+    let current_frame = self.surface.get_current_texture().ok()?;
+    let (texture_delta, paint_jobs) = f();
+
+    let window_size_bind_group_store;
+    let window_size_bind_group = match self.window_size_bind_group.as_ref() {
+      Some(bind_group) => bind_group,
+      None => {
+          window_size_bind_group_store = self.create_window_size_bind_group();
+          &window_size_bind_group_store
+        }
+    };
+
+    //Alloc new textures
+    let (new_textures, new_patches) = self.redraw_alloc_new_texture_data(texture_delta.set);
+    for (id, tex, tex_binding) in new_textures {
+      self.textures.insert(id, (tex, tex_binding));
+    }
+
+    // wgpu::ImageCopyTexture {
+    //   texture,
+    //   mip_level: 0,
+    //   origin,
+    //   aspect: wgpu::TextureAspect::All,
+    // };
+
+    //Render deltas
+    let mut encoder = self.device.create_command_encoder(
+      &CommandEncoderDescriptor { label: Some("redraw_current_frame_encoder") }
+    );
+    self.redraw_render_deltas(&mut encoder, &paint_jobs, &current_frame, window_size_bind_group)?;
+    self.redraw_render_patches(&mut encoder, &new_patches)?;
+
+      
     //submit commands
     self.queue.submit(std::iter::once(encoder.finish()));
     current_frame.present();

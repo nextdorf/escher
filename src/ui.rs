@@ -13,7 +13,7 @@ pub mod constants {
   pub const ZOOM_PLUS: f32 = 1.125;
 }
 
-static mut did_run: bool = false;
+// static mut did_run: bool = false;
 
 pub struct UI {
   pub img_hnd: Vec<TextureHandle>,
@@ -21,6 +21,7 @@ pub struct UI {
   pub lctrl_modifier: bool,
   pub rctrl_modifier: bool,
   pub license_status: bool,
+  pub exit_status: bool,
 }
 
 impl Default for UI {
@@ -31,6 +32,7 @@ impl Default for UI {
       lctrl_modifier: false,
       rctrl_modifier: false,
       license_status: false,
+      exit_status: false,
     }
   }
 }
@@ -94,7 +96,7 @@ impl UI {
       ui.menu_button("File", |ui| {
         ui.separator();
         if ui.button("Exit").clicked() {
-          // ui.
+          self.exit_status = true;
         }
       });
 
@@ -191,6 +193,10 @@ pub fn handle_events(event: event::Event<MyEvent>, _window_target: &EventLoopWin
         
         (texture_delta, paint_jobs)
       }).and(Some(true)).unwrap_or(false);
+
+      if ui_state.exit_status {
+        *control_flow = ControlFlow::Exit
+      }
 
       // unsafe {
       //   if !did_run {
