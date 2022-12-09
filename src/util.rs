@@ -86,4 +86,29 @@ impl VisualsColorMap {
 }
 
 
+pub fn pad_array(arr: &[u8], stride_len: usize, pad_size: usize, none_if_padded: bool) -> Option<(Vec<u8>, usize)> {
+  assert_eq!(arr.len() % stride_len, 0);
+  assert!(pad_size > 1);
+  let partially_padded_len = stride_len % pad_size;
+  if partially_padded_len == 0 {
+    if none_if_padded {
+      None
+    } else {
+      Some((Vec::from(arr), stride_len))
+    }
+  }
+  else {
+    let inv_pad_size = pad_size - partially_padded_len;
+    let padding = std::iter::repeat(0)
+      .take(inv_pad_size)
+      .collect::<Vec<_>>();
+    let res = arr.chunks_exact(stride_len).flat_map(|chunk| {
+      let mut ret = chunk.to_vec();
+      ret.extend(padding.iter());
+      ret
+      }).collect();
+    Some((res, stride_len + inv_pad_size))
+  }
+}
+
 

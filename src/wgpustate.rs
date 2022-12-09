@@ -1,6 +1,8 @@
 use egui_winit::{winit::window::Window, egui::{ClippedPrimitive, TexturesDelta, epaint::ahash::HashMap, TextureId}};
 use wgpu::{Device, Queue, Surface, TextureViewDescriptor, CommandEncoderDescriptor, RenderPassDescriptor, util::DeviceExt, SurfaceConfiguration};
-use std::{ops::FnOnce, num::NonZeroU64};
+use std::{ops::FnOnce, num::{NonZeroU64, NonZeroU32}};
+
+use crate::util;
 
 pub struct WgpuState {
   device: Device,
@@ -71,28 +73,6 @@ pub fn epaint_vertex_buffer_description<'a>() -> wgpu::VertexBufferLayout<'a> {
 }
 
 
-fn map_image_delta<F, T>(img_delta: &epaint::ImageDelta, f: F) -> T
-  where F: FnOnce(&[u8]) -> T
-{
-  let font_gamma = 1.;
-
-  let pixel_data: &[u8];
-  let pixel_data_store: Vec<_>;
-  pixel_data = match &img_delta.image {
-    egui_winit::egui::ImageData::Color(img) => {
-      bytemuck::cast_slice(img.pixels.as_slice())
-    },
-    egui_winit::egui::ImageData::Font(img) => {
-      pixel_data_store = img.pixels.iter().flat_map(|gamma| {
-        let val = (gamma.powf(font_gamma/2.2)*255.).round() as _;
-        [val, val, val, val]
-      }).collect();
-      pixel_data_store.as_slice()
-    },
-  };
-
-  f(pixel_data)
-}
 
 impl WgpuState {
   pub fn new(window: &Window, surface_scale: f32) -> Option<Self> {
@@ -298,44 +278,85 @@ impl WgpuState {
   }
 
   fn redraw_alloc_new_texture_data(&self, texture_delta_set: Vec<(TextureId, epaint::ImageDelta)>)
-    -> (Vec<(TextureId, wgpu::Texture, wgpu::BindGroup)>, Vec<(TextureId, [usize; 2], epaint::ImageDelta)>)
+    -> (Vec<(TextureId, wgpu::Texture, wgpu::BindGroup)>, Vec<(TextureId, wgpu::Origin3d, wgpu::Buffer, wgpu::ImageDataLayout, wgpu::Extent3d)>)
   {
     use egui_winit::egui;
+    let font_gamma = 1.;
+    let (rgba8_to_surface_format, bytes_per_pixel) = if self.surface_config.format.describe().srgb {
+      (wgpu::TextureFormat::Rgba8UnormSrgb, 4)
+    } else {
+      (wgpu::TextureFormat::Rgba8Unorm, 4)
+    };
 
     let mut res_full = Vec::with_capacity(texture_delta_set.len());
     let mut res_partial = Vec::with_capacity(texture_delta_set.len());
     for (texture_id, img_delta) in texture_delta_set {
+      let pixel_data_store: Vec<_>;
+      let pixel_data = match &img_delta.image {
+        egui_winit::egui::ImageData::Color(img) => bytemuck::cast_slice(img.pixels.as_slice()),
+        egui_winit::egui::ImageData::Font(img) => {
+          pixel_data_store = img.pixels.iter().flat_map(|gamma| {
+            let val = (gamma.powf(font_gamma/2.2)*255.).round() as _;
+            [val, val, val, val]
+          }).collect();
+          pixel_data_store.as_slice()
+        },
+      };
+  
       if let Some(pos) = img_delta.pos {
-        // wgpu::Texture
-        //FIXME
-        // eprintln!("Not sure where to place {:?}...", dbg!(texture_id));
-        res_partial.push((texture_id, pos, img_delta));
-      } else {
-        let rgba8_to_surface_format = if self.surface_config.format.describe().srgb {
-          wgpu::TextureFormat::Rgba8UnormSrgb
-        } else {
-          wgpu::TextureFormat::Rgba8Unorm
+        let origin = wgpu::Origin3d { x: pos[0] as _, y: pos[1] as _, z: 0 };
+        let patch_size = wgpu::Extent3d {
+          width: img_delta.image.width() as _,
+          height: img_delta.image.height() as _,
+          depth_or_array_layers: 1
+        };
+        let stride0 = (patch_size.width as usize) * bytes_per_pixel;
+        
+        let padded_pixel_data_store;
+        let (padded_pixel_data, new_stride) = match util::pad_array(
+            pixel_data,
+            stride0,
+            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as _,
+            true ) {
+          Some((data, width)) => {
+            padded_pixel_data_store = data;
+            (padded_pixel_data_store.as_slice(), width)
+          },
+          None => (pixel_data, stride0)
         };
 
+        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+          label: Some(format!("Buffer for patch {:?}", texture_id).as_str()),
+          contents: padded_pixel_data,
+          usage: wgpu::BufferUsages::COPY_SRC,
+        });
+        let buffer_layout = wgpu::ImageDataLayout {
+          offset: 0,
+          bytes_per_row: NonZeroU32::new(new_stride as _),
+          rows_per_image: NonZeroU32::new(patch_size.height)
+        };
+        // eprintln!("Not sure where to place {:?}...", dbg!(texture_id));
+        assert_eq!(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, buffer_layout.bytes_per_row.unwrap().into());
+        res_partial.push((texture_id, origin, buffer, buffer_layout, patch_size));
+      } else {
         //Expects unmultiplied RGBA and wgsl will see unmultiplied sRGBA
-        let tex = map_image_delta(&img_delta, |pixel_data|
-          self.device.create_texture_with_data(
-            &self.queue,
-            &wgpu::TextureDescriptor {
-              label: Some(format!("Texture {:?}", texture_id).as_str()),
-              size: wgpu::Extent3d {
-                width: img_delta.image.width() as _,
-                height: img_delta.image.height() as _,
-                depth_or_array_layers: 1
-              },
-              mip_level_count: 1,
-              sample_count: 1,
-              dimension: wgpu::TextureDimension::D2,
-              format: rgba8_to_surface_format,
-              usage: wgpu::TextureUsages::TEXTURE_BINDING //COPY_DST is added automatically
+        let tex = self.device.create_texture_with_data(
+          &self.queue,
+          &wgpu::TextureDescriptor {
+            label: Some(format!("Texture {:?}", texture_id).as_str()),
+            size: wgpu::Extent3d {
+              width: img_delta.image.width() as _,
+              height: img_delta.image.height() as _,
+              depth_or_array_layers: 1
             },
-            pixel_data
-        ));
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: rgba8_to_surface_format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
+          },
+          pixel_data
+        );
 
         let tex_filter = match img_delta.filter {
           egui::TextureFilter::Nearest => wgpu::FilterMode::Nearest,
@@ -401,7 +422,7 @@ impl WgpuState {
       render_pass.set_pipeline(&self.surface_update_pipeline);
       if (clip_rect_bottom_right.0 < full_size.0 && clip_rect_bottom_right.1 <= full_size.1) || (clip_rect_bottom_right.0 <= full_size.0 && clip_rect_bottom_right.1 < full_size.1) {
         render_pass.set_scissor_rect(clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1);
-        eprintln!("scissor_rect: {:?}", (clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1));
+        // eprintln!("scissor_rect: {:?}", (clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1));
       }
       render_pass.set_bind_group(0, bind_group, &[]);
       render_pass.set_bind_group(1, &window_size_bind_group, &[]);
@@ -413,8 +434,23 @@ impl WgpuState {
   }
 
 
-  fn redraw_render_patches(&self, encoder: &mut wgpu::CommandEncoder, patches: &Vec<(TextureId, [usize; 2], epaint::ImageDelta)>) -> Option<()>{
+  fn redraw_render_patches(&self, encoder: &mut wgpu::CommandEncoder, patches: Vec<(TextureId, wgpu::Origin3d, wgpu::Buffer, wgpu::ImageDataLayout, wgpu::Extent3d)>) -> Option<()>{
+    for (tex_id, origin, copy_buffer, copy_src_layout, copy_size) in patches {
+      let copy_src = wgpu::ImageCopyBuffer {
+        buffer: &copy_buffer,
+        layout: copy_src_layout,
+      };
+      let texture = &self.textures.get(&tex_id)?.0;
+      let copy_dst = wgpu::ImageCopyTexture {
+        texture,
+        mip_level: 0,
+        origin,
+        aspect: wgpu::TextureAspect::All,
+      };
+      encoder.copy_buffer_to_texture(copy_src, copy_dst, copy_size);
+    }
     Some(())
+    //FIXME: An invokation of a redraw event seems to be necesarry
   }
 
 
@@ -449,7 +485,7 @@ impl WgpuState {
       &CommandEncoderDescriptor { label: Some("redraw_current_frame_encoder") }
     );
     self.redraw_render_deltas(&mut encoder, &paint_jobs, &current_frame, window_size_bind_group)?;
-    self.redraw_render_patches(&mut encoder, &new_patches)?;
+    self.redraw_render_patches(&mut encoder, new_patches)?;
 
       
     //submit commands

@@ -115,9 +115,8 @@ impl UI {
       egui::Window::new("License")
         .open(&mut self.license_status)
         .show(ctx, |ui| {
-          // ui.label(include_str!("../LICENSE"));
-          ui.label("Copyright © NextBigIdea");
-          // ui.label("Copyright (c) NextBigIdea");
+          ui.label(include_str!("../LICENSE"));
+          //FIXME: An invokation of a redraw event seems to be necesarry
         });
     }
   }
