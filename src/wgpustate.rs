@@ -354,6 +354,13 @@ impl WgpuState {
       self.textures.insert(id, (tex, tex_binding));
     }
 
+    wgpu::ImageCopyTexture {
+      texture,
+      mip_level: 0,
+      origin,
+      aspect: wgpu::TextureAspect::All,
+    };
+
     //Render deltas
     let current_view = current_frame.texture.create_view(
       &TextureViewDescriptor::default());
@@ -397,16 +404,16 @@ impl WgpuState {
       }));
       let vert_inds_buffer = vert_inds_buffers.last().unwrap();
 
-      // let clip_rect_top_left = ((clip_rect.min.x*self.get_surface_scale()) as _, (clip_rect.min.y*self.get_surface_scale()) as _);
-      // let clip_rect_bottom_right: (u32, u32) = ((clip_rect.max.x*self.get_surface_scale()) as _, (clip_rect.max.y*self.get_surface_scale()) as _);
-      // let clip_rect_size = (clip_rect_bottom_right.0 - clip_rect_top_left.0, clip_rect_bottom_right.1 - clip_rect_top_left.1);
-      // let full_size = (self.surface_config.width, self.surface_config.height);
+      let clip_rect_top_left = ((clip_rect.min.x*self.get_surface_scale()) as _, (clip_rect.min.y*self.get_surface_scale()) as _);
+      let clip_rect_bottom_right: (u32, u32) = ((clip_rect.max.x*self.get_surface_scale()) as _, (clip_rect.max.y*self.get_surface_scale()) as _);
+      let clip_rect_size = (clip_rect_bottom_right.0 - clip_rect_top_left.0, clip_rect_bottom_right.1 - clip_rect_top_left.1);
+      let full_size = (self.surface_config.width, self.surface_config.height);
 
       render_pass.set_pipeline(&self.surface_update_pipeline);
-      // if (clip_rect_bottom_right.0 < full_size.0 && clip_rect_bottom_right.1 <= full_size.1) || (clip_rect_bottom_right.0 <= full_size.0 && clip_rect_bottom_right.1 < full_size.1) {
-      //   render_pass.set_scissor_rect(clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1);
-      //   eprintln!("scissor_rect: {:?}", (clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1));
-      // }
+      if (clip_rect_bottom_right.0 < full_size.0 && clip_rect_bottom_right.1 <= full_size.1) || (clip_rect_bottom_right.0 <= full_size.0 && clip_rect_bottom_right.1 < full_size.1) {
+        render_pass.set_scissor_rect(clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1);
+        eprintln!("scissor_rect: {:?}", (clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1));
+      }
       render_pass.set_bind_group(0, bind_group, &[]);
       render_pass.set_bind_group(1, &window_size_bind_group, &[]);
       render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));

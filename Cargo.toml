@@ -15,6 +15,7 @@ wgpu = "*"
 epaint = {version="*", features = ["bytemuck"]}
 pollster = "*"
 env_logger = "*"
+either = "*"
 
 image = "*"
 escher_video = { path = "src/video", version = "*" }
