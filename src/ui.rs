@@ -13,7 +13,7 @@ pub enum MyEvent {
 }
 
 pub mod constants {
-  pub const ZOOM_100: f32 = 1.25;
+  pub const ZOOM_100: f32 = 1.125;
   pub const ZOOM_PLUS: f32 = 1.125;
 }
 
@@ -125,7 +125,6 @@ impl UI {
         .open(&mut self.license_status)
         .show(ctx, |ui| {
           ui.label(include_str!("../LICENSE"));
-          //FIXME: An invokation of a redraw event seems to be necesarry
         });
     }
   }
@@ -134,21 +133,31 @@ impl UI {
     self.lctrl_modifier || self.rctrl_modifier
   }
 
-  fn update_fps(&mut self) {
+  const FPS_EMA_COEFF: f64 = 1./15.;
+  fn calc_fps(&self) -> (f64, f64, time::Instant){
+    //1/fps = EMA of dtime
     let time0 = time::Instant::now();
-    let fps0 = 1. / (time0 - self.last_frame_time).as_secs_f64();
-    const EMA_COEFF: f64 = 1./60.;
-    const SIMILARITY_RANGE: f64 = 5.;
-    self.last_frame_time = time0;
-    if fps0 / self.fps > SIMILARITY_RANGE || self.fps / fps0 > SIMILARITY_RANGE {
-      self.fps = fps0;
-    } else {
-      self.fps = EMA_COEFF*fps0 + (1.-EMA_COEFF)*self.fps;
-    }
+    let dtime = (time0 - self.last_frame_time).as_secs_f64();
+    (self.fps / (1. + Self::FPS_EMA_COEFF*(self.fps * dtime - 1.)), 1./dtime, time0)
   }
 
-  pub fn get_fps(&self) -> f64 { self.fps }
+  fn update_fps(&mut self) {
+    let (fps_measured, fps_projected);
+    (fps_measured, fps_projected, self.last_frame_time) = self.calc_fps();
+    const SIMILARITY_RANGE: f64 = 2.;
+    let fps_ratio = fps_measured / fps_projected;
+    let fps_ratio_in_range = 1./SIMILARITY_RANGE <= fps_ratio && fps_ratio <= SIMILARITY_RANGE;
+    self.fps = if fps_ratio_in_range {fps_measured} else {fps_projected};
+  }
 
+  pub fn get_fps(&self) -> f64 {
+    let (fps_measured, fps_projected, _) = self.calc_fps();
+    let fps_measured = fps_measured * (1.-Self::FPS_EMA_COEFF); //Why do I need this??
+    const SIMILARITY_RANGE: f64 = 1.035;
+    let fps_ratio = fps_measured / fps_projected;
+    let fps_ratio_in_range = 1./SIMILARITY_RANGE <= fps_ratio && fps_ratio <= SIMILARITY_RANGE;
+    if fps_ratio_in_range {fps_measured} else {fps_measured.min(fps_projected)}
+  }
 }
 
 
@@ -168,8 +177,7 @@ pub fn start_time() -> &'static time::Instant { unsafe {START_TIME_STORE.as_ref(
 pub fn handle_events(event: event::Event<MyEvent>, _window_target: &EventLoopWindowTarget<MyEvent>, control_flow: &mut ControlFlow,
   window: &Window, win_state: &mut State, ctx: &egui::Context, render_state: &mut WgpuState, ui_state: &mut UI)
 {
-  // *control_flow = ControlFlow::Wait;
-  let event_str = format!("{:?}", event);
+  // let event_str = format!("{:?}", event);
 
   match event {
     event::Event::WindowEvent { window_id, event } if window_id==window.id() => {
@@ -217,9 +225,9 @@ pub fn handle_events(event: event::Event<MyEvent>, _window_target: &EventLoopWin
           _ => {}
         }
       }
-      // window.request_redraw();
+      window.request_redraw();
     },
-    event::Event::DeviceEvent { device_id, event } => {
+    event::Event::DeviceEvent { .. } => {
       //TODO
       window.request_redraw();
     },
@@ -232,12 +240,12 @@ pub fn handle_events(event: event::Event<MyEvent>, _window_target: &EventLoopWin
         let full_output = ctx.run(raw_input, |ctx| ui_state.ui(ctx));
         let time_until_repaint = full_output.repaint_after;
         if time_until_repaint.is_zero() {
-          window.request_redraw();
           *control_flow = ControlFlow::Poll;
         } else if time_until_repaint == time::Duration::MAX {
           *control_flow = ControlFlow::Wait;
         } else {
-          wait_at_most_until(control_flow, time::Instant::now() + time_until_repaint);
+          // wait_at_most_until(control_flow, time::Instant::now() + time_until_repaint);
+          *control_flow = ControlFlow::WaitUntil(time::Instant::now() + time_until_repaint);
         }
 
         win_state.handle_platform_output(&window, &ctx, full_output.platform_output);
@@ -258,15 +266,14 @@ pub fn handle_events(event: event::Event<MyEvent>, _window_target: &EventLoopWin
     event::Event::MainEventsCleared => {
     },
     event::Event::UserEvent(MyEvent::RequestRedraw) => {
-      window.request_redraw();
       *control_flow = ControlFlow::Poll;
+      window.request_redraw();
     },
     event::Event::NewEvents(start_cause) => match start_cause {
       event::StartCause::Init  => unsafe {START_TIME_STORE.get_or_insert(time::Instant::now());},
       event::StartCause::ResumeTimeReached { .. } => window.request_redraw(),
-      // event::StartCause::ResumeTimeReached { .. } => *control_flow = ControlFlow::Poll,
-      // event::StartCause::Poll => {ui_state.dispatch_event(MyEvent::RequestRedraw);},
-      _ => {}
+      event::StartCause::Poll => window.request_redraw(),
+      event::StartCause::WaitCancelled { .. } => {}
     },
     _ => {}
   }

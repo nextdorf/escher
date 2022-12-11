@@ -9,7 +9,7 @@ fn setup_egui_winit(event_loop: &EventLoop<ui::MyEvent>) -> (Window, egui_winit:
     .with_decorations(false)
     .with_resizable(true)
     .with_transparent(true)
-    .with_title("not eframe")
+    .with_title("escher")
     .with_inner_size(winit::dpi::PhysicalSize {
       width: 512,
       height: 512,

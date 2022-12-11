@@ -2,7 +2,7 @@ use egui_winit::{winit::window::Window, egui::{ClippedPrimitive, TexturesDelta, 
 use wgpu::{Device, Queue, Surface, TextureViewDescriptor, CommandEncoderDescriptor, RenderPassDescriptor, util::DeviceExt, SurfaceConfiguration};
 use std::{ops::FnOnce, num::{NonZeroU64, NonZeroU32}};
 
-use crate::{util, ui};
+use crate::util;
 
 pub struct WgpuState {
   device: Device,
