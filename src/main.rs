@@ -26,9 +26,8 @@ fn setup_egui_winit(event_loop: &EventLoop<ui::MyEvent>) -> (Window, egui_winit:
     .unwrap();
   egui_ctx.set_style(style);
 
-  let fonts = egui::FontDefinitions::default();
-  dbg!(&fonts.families);
-  egui_ctx.set_fonts(fonts);
+  // let fonts = egui::FontDefinitions::default();
+  // egui_ctx.set_fonts(fonts);
 
   (window, win_state, egui_ctx)
 }
@@ -38,10 +37,9 @@ fn main() {
   let event_loop = winit::event_loop::EventLoopBuilder::<ui::MyEvent>::with_user_event().build();
 
   let (window, mut win_state, egui_ctx) = setup_egui_winit(&event_loop);
-  let mut ui_state = ui::UI::new(&egui_ctx);
+  let mut ui_state = ui::UI::new(event_loop.create_proxy(), &egui_ctx);
   let mut render_state = WgpuState::new(&window, ui::constants::ZOOM_100).unwrap();
   win_state.set_pixels_per_point(ui::constants::ZOOM_100);
-
 
 
   event_loop.run(move |event, window_target, control_flow|

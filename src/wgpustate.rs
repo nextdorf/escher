@@ -2,7 +2,7 @@ use egui_winit::{winit::window::Window, egui::{ClippedPrimitive, TexturesDelta, 
 use wgpu::{Device, Queue, Surface, TextureViewDescriptor, CommandEncoderDescriptor, RenderPassDescriptor, util::DeviceExt, SurfaceConfiguration};
 use std::{ops::FnOnce, num::{NonZeroU64, NonZeroU32}};
 
-use crate::util;
+use crate::{util, ui};
 
 pub struct WgpuState {
   device: Device,
@@ -372,14 +372,14 @@ impl WgpuState {
     (res_full, res_partial)
   }
 
-  fn redraw_render_deltas(&self, encoder: &mut wgpu::CommandEncoder, paint_jobs: &Vec<ClippedPrimitive>, current_frame: &wgpu::SurfaceTexture, window_size_bind_group: &wgpu::BindGroup) -> Option<()> {
+  fn redraw_render_deltas(&self, encoder: &mut wgpu::CommandEncoder, paint_jobs: Vec<ClippedPrimitive>, current_frame: &wgpu::SurfaceTexture, window_size_bind_group: &wgpu::BindGroup) -> Option<()> {
     use egui_winit::egui::epaint::Primitive;
     let current_view = current_frame.texture.create_view(
       &TextureViewDescriptor::default());
     let mut vertex_buffers = Vec::with_capacity(paint_jobs.len());
     let mut vert_inds_buffers = Vec::with_capacity(paint_jobs.len());
 
-    for ClippedPrimitive { clip_rect, primitive } in paint_jobs.iter() {
+    for ClippedPrimitive { clip_rect, primitive } in paint_jobs {
       let mut render_pass = encoder.begin_render_pass(
         &RenderPassDescriptor {
           label: Some("current_frame_redraw_render_pass"),
@@ -469,22 +469,17 @@ impl WgpuState {
 
     //Alloc new textures
     let (new_textures, new_patches) = self.redraw_alloc_new_texture_data(texture_delta.set);
+    // eprintln!("New texs: {}, new patches: {}, new paintjobs: {}", new_textures.len(), new_patches.len(), paint_jobs.len());
+    if paint_jobs.len() == 0 { eprintln!("No new paintjobs"); }
     for (id, tex, tex_binding) in new_textures {
       self.textures.insert(id, (tex, tex_binding));
     }
-
-    // wgpu::ImageCopyTexture {
-    //   texture,
-    //   mip_level: 0,
-    //   origin,
-    //   aspect: wgpu::TextureAspect::All,
-    // };
 
     //Render deltas
     let mut encoder = self.device.create_command_encoder(
       &CommandEncoderDescriptor { label: Some("redraw_current_frame_encoder") }
     );
-    self.redraw_render_deltas(&mut encoder, &paint_jobs, &current_frame, window_size_bind_group)?;
+    self.redraw_render_deltas(&mut encoder, paint_jobs, &current_frame, window_size_bind_group)?;
     self.redraw_render_patches(&mut encoder, new_patches)?;
 
       
