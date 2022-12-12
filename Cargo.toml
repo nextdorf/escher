@@ -7,10 +7,7 @@ edition = "2021"
 
 [dependencies]
 bytemuck = "*"
-# egui-wgpu = "*"
 egui-winit = "*"
-# egui = "*"
-# winit = "*"
 wgpu = "*"
 epaint = {version="*", features = ["bytemuck"]}
 pollster = "*"
@@ -18,7 +15,4 @@ env_logger = "*"
 
 image = "*"
 escher_video = { path = "src/video", version = "*" }
-
-# [build-dependencies]
-# bindgen = "*"
 

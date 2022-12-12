@@ -1,13 +1,17 @@
-use std::time;
+pub mod event;
+mod error;
+
+use std::{time, collections::HashMap};
 
 use epaint::TextureHandle;
-use egui_winit::{egui, winit::{event, event_loop::{ControlFlow, EventLoopWindowTarget, self}, window::Window, dpi::PhysicalSize}, State};
+use egui_winit::{egui, winit::{event_loop::{self, EventLoopClosed}, window}};
 
-use crate::wgpustate::WgpuState;
+// use crate::wgpustate::WgpuState;
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub enum MyEvent {
-  RequestRedraw,
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum EscherEvent {
+  RequestRedrawPath{ path: Vec<window::WindowId>, redraw_children: bool },
   Rescale(f32),
   Exit(u8),
 }
@@ -18,10 +22,99 @@ pub mod constants {
 }
 
 
+pub trait EscherWindow: Sized {
+  fn get_native_window(&self) -> &window::Window;
+
+  fn get_native_window_id(&self) -> window::WindowId {
+    self.get_native_window().id()
+  }
+
+  fn try_send_event(&self, event: EscherEvent) -> Result<(), EventLoopClosed<EscherEvent>>;
+
+  fn send_event(&self, event: EscherEvent) {
+    self.try_send_event(event).unwrap_or_default()
+  }
+
+
+  fn get_toplevel(&self) -> &Self;
+  fn get_mut_toplevel(&mut self) -> &mut Self;
+  // fn move_to_toplevel(self) -> Self;
+
+  fn get_parent(&self) -> Option<&Self>;
+  fn get_mut_parent(&mut self) -> Option<&mut Self>;
+  // fn move_to_parent(self) -> Option<Self>;
+
+  fn get_children(&self) -> &HashMap<window::WindowId, Self>;
+  fn get_mut_children(&mut self) -> &mut HashMap<window::WindowId, Self>;
+
+  fn reparent_child(&mut self, child_id: window::WindowId, new_parent: &mut Self) -> Result<(), error::ReparentError> {
+    match self.get_mut_children().remove(&child_id) {
+      Some(child) => {
+        if let Some(collision) = new_parent.get_mut_children().insert(child_id, child) {
+          panic!("Bug in winit: window id collision for {:?}", collision.get_native_window_id())
+        } else {
+          Ok(())
+        }
+      },
+      None => Err(error::ReparentError::PathNotFound)
+    }
+  }
+
+  fn reparent_child_to(&mut self, child_id: window::WindowId, path: &Vec<window::WindowId>, is_relative: bool) -> Result<(), error::ReparentError> {
+    if is_relative {
+      if path.is_empty() {
+        if self.get_children().contains_key(&child_id) {
+          Ok(())
+        } else {
+          Err(error::ReparentError::PathNotFound)
+        }
+      } else {
+        let mut new_parent_ptr = self as *mut Self;
+        for curr_id in path {
+          let new_parent = unsafe { new_parent_ptr.as_mut().unwrap() };
+          match new_parent.get_mut_children().get_mut(&curr_id) {
+            Some(child) => new_parent_ptr = child,
+            None => return Err(error::ReparentError::PathNotFound),
+          };
+        }
+        self.reparent_child(child_id, unsafe { new_parent_ptr.as_mut().unwrap() })
+      }
+    } else {
+      let toplevel = self.get_mut_toplevel() as *mut Self;
+      unsafe {
+        self.reparent_child(child_id, toplevel.as_mut().unwrap())?;
+        toplevel.as_mut().unwrap().reparent_child_to(child_id, path, true)
+      }
+    }
+  }
+
+
+  fn ctrl_modifier(&self) -> bool {
+    let toplevel = self.get_toplevel();
+    if (self as *const Self) != (toplevel as *const Self) {
+      panic!("Window {:?} doesn't implement ctrl_modifier", self.get_native_window_id())
+    } else {
+      toplevel.ctrl_modifier()
+    }
+  }
+  fn shift_modifier(&self) -> bool {
+    let toplevel = self.get_toplevel();
+    if (self as *const Self) != (toplevel as *const Self) {
+      panic!("Window {:?} doesn't implement shift_modifier", self.get_native_window_id())
+    } else {
+      toplevel.shift_modifier()
+    }
+  }
+
+
+  fn ui(&mut self, ctx: &egui::Context);
+}
+
+
 pub struct UI {
   pub img_hnd: Vec<TextureHandle>,
   test_var: usize,
-  event_loop_proxy: event_loop::EventLoopProxy<MyEvent>,
+  event_loop_proxy: event_loop::EventLoopProxy<EscherEvent>,
 
   pub lctrl_modifier: bool,
   pub rctrl_modifier: bool,
@@ -32,7 +125,7 @@ pub struct UI {
 
 
 impl UI {
-  pub fn new(event_loop_proxy: event_loop::EventLoopProxy<MyEvent>, ctx: &egui::Context) -> Self {
+  pub fn new(event_loop_proxy: event_loop::EventLoopProxy<EscherEvent>, ctx: &egui::Context) -> Self {
     let img_hnd = vec![
       ctx.load_texture("uv_texture",
         (|| {
@@ -69,7 +162,7 @@ impl UI {
     }
   }
 
-  pub fn dispatch_event(&mut self, event: MyEvent) -> bool {
+  pub fn dispatch_event(&self, event: EscherEvent) -> bool {
     self.event_loop_proxy
       .send_event(event)
       .expect("Eventproxy expired");
@@ -105,7 +198,7 @@ impl UI {
       ui.menu_button("File", |ui| {
         ui.separator();
         if ui.button("Exit").clicked() {
-          self.dispatch_event(MyEvent::Exit(0));
+          self.dispatch_event(EscherEvent::Exit(0));
         }
       });
 
@@ -158,128 +251,5 @@ impl UI {
     let fps_ratio_in_range = 1./SIMILARITY_RANGE <= fps_ratio && fps_ratio <= SIMILARITY_RANGE;
     if fps_ratio_in_range {fps_measured} else {fps_measured.min(fps_projected)}
   }
-}
-
-
-pub fn wait_at_most_until(control_flow: &mut ControlFlow, t: time::Instant) {
-  if let Some(new_control_flow) = match *control_flow {
-    ControlFlow::Wait | ControlFlow::Poll => Some(ControlFlow::WaitUntil(t)),
-    ControlFlow::WaitUntil(t2) if t2 > t => Some(ControlFlow::WaitUntil(t)),
-    _ => None
-  }{
-    *control_flow = new_control_flow;
-  }
-}
-
-static mut START_TIME_STORE: Option<time::Instant> = None;
-pub fn start_time() -> &'static time::Instant { unsafe {START_TIME_STORE.as_ref().unwrap()} }
-
-pub fn handle_events(event: event::Event<MyEvent>, _window_target: &EventLoopWindowTarget<MyEvent>, control_flow: &mut ControlFlow,
-  window: &Window, win_state: &mut State, ctx: &egui::Context, render_state: &mut WgpuState, ui_state: &mut UI)
-{
-  // let event_str = format!("{:?}", event);
-
-  match event {
-    event::Event::WindowEvent { window_id, event } if window_id==window.id() => {
-      if !win_state.on_event(&ctx, &event) {
-        match event {
-          event::WindowEvent::Resized(PhysicalSize { width, height}) =>
-            render_state.resize(Some(width), Some(height), None, win_state),
-          event::WindowEvent::CloseRequested | event::WindowEvent::Destroyed => 
-            *control_flow = ControlFlow::Exit,
-          event::WindowEvent::KeyboardInput { input, .. } => {
-            if let event::KeyboardInput { virtual_keycode: Some(event::VirtualKeyCode::LControl), state,.. } = input {
-              ui_state.lctrl_modifier = state == event::ElementState::Pressed;
-            }
-            else if let event::KeyboardInput { virtual_keycode: Some(event::VirtualKeyCode::RControl), state,.. } = input {
-              ui_state.rctrl_modifier = state == event::ElementState::Pressed;
-            }
-            else if let event::KeyboardInput { virtual_keycode: Some(keycode), state: event::ElementState::Pressed,.. } = input {
-              match keycode {
-                event::VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-                event::VirtualKeyCode::F10 => println!("FPS: {}", ui_state.get_fps()),
-                _ => {}
-              }
-            }
-            if ui_state.ctrl_modifier() {
-              if let event::KeyboardInput { virtual_keycode: Some(keycode), state: event::ElementState::Pressed,.. } = input {
-                match keycode {
-                  event::VirtualKeyCode::Plus | event::VirtualKeyCode::NumpadAdd => {
-                    let scale_factor = win_state.pixels_per_point() * constants::ZOOM_PLUS;
-                    render_state.resize(None, None, Some(scale_factor), win_state);
-                  },
-                  event::VirtualKeyCode::Minus | event::VirtualKeyCode::NumpadSubtract => {
-                    let scale_factor = win_state.pixels_per_point() / constants::ZOOM_PLUS;
-                    render_state.resize(None, None, Some(scale_factor), win_state);
-                  },
-                  event::VirtualKeyCode::Key0 | event::VirtualKeyCode::Numpad0 =>
-                    render_state.resize(None, None, Some(constants::ZOOM_100), win_state),
-                  _ => {}
-                }
-              }
-            }
-          },
-          event::WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size } => {
-            render_state.resize(Some(new_inner_size.width), Some(new_inner_size.height), Some(scale_factor as _), win_state);
-          },
-          _ => {}
-        }
-      }
-      window.request_redraw();
-    },
-    event::Event::DeviceEvent { .. } => {
-      //TODO
-      window.request_redraw();
-    },
-    event::Event::RedrawRequested(window_id) if window_id != window.id() => { },
-    event::Event::RedrawRequested(..) => {
-      render_state.update_window_size_bind_group(false);
-  
-      let _did_render = render_state.redraw(|| {
-        let raw_input = win_state.take_egui_input(&window);
-        let full_output = ctx.run(raw_input, |ctx| ui_state.ui(ctx));
-        let time_until_repaint = full_output.repaint_after;
-        if time_until_repaint.is_zero() {
-          *control_flow = ControlFlow::Poll;
-        } else if time_until_repaint == time::Duration::MAX {
-          *control_flow = ControlFlow::Wait;
-        } else {
-          // wait_at_most_until(control_flow, time::Instant::now() + time_until_repaint);
-          *control_flow = ControlFlow::WaitUntil(time::Instant::now() + time_until_repaint);
-        }
-
-        win_state.handle_platform_output(&window, &ctx, full_output.platform_output);
-        let paint_jobs = ctx.tessellate(full_output.shapes);
-        let texture_delta = full_output.textures_delta;
-        
-        (texture_delta, paint_jobs)
-      }).and(Some(true))
-      .unwrap_or_else(|| {
-        eprintln!("Incomplete rendering");
-        false
-      });
-
-      ui_state.update_fps();
-    },
-    event::Event::UserEvent(MyEvent::Exit(err_code)) =>
-      *control_flow = if err_code==0 {ControlFlow::Exit} else {ControlFlow::ExitWithCode(err_code as _)},
-    event::Event::MainEventsCleared => {
-    },
-    event::Event::UserEvent(MyEvent::RequestRedraw) => {
-      *control_flow = ControlFlow::Poll;
-      window.request_redraw();
-    },
-    event::Event::NewEvents(start_cause) => match start_cause {
-      event::StartCause::Init  => unsafe {START_TIME_STORE.get_or_insert(time::Instant::now());},
-      event::StartCause::ResumeTimeReached { .. } => window.request_redraw(),
-      event::StartCause::Poll => window.request_redraw(),
-      event::StartCause::WaitCancelled { .. } => {}
-    },
-    _ => {}
-  }
-
-  // if *control_flow != ControlFlow::Wait {
-  //   eprintln!("[{:?}] {:?}: {:?}", ((time::Instant::now() - *start_time()).as_secs_f32()*60.) as usize, *control_flow, event_str)
-  // }
 }
 
