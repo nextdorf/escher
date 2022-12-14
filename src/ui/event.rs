@@ -32,6 +32,7 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
   window: &window::Window, win_state: &mut State, ctx: &egui::Context, render_state: &mut WgpuState, ui_state: &mut UI)
 {
   // let event_str = format!("{:?}", event);
+  //TODO: move this code to UI or EscherWindow and find a way to
 
   match event {
     Event::WindowEvent { window_id, event } if window_id==window.id() => {
