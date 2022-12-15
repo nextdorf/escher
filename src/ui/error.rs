@@ -1,6 +1,8 @@
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub enum ReparentError {
+pub enum HierarchyError {
   PathNotFound,
+  HierarchyNotFound,
+  ToplevelNotFound,
 }
 

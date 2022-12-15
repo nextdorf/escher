@@ -1,4 +1,4 @@
-use std::time;
+use std::{collections::HashMap, time, rc::Rc};
 
 use egui_winit::{
   egui,
@@ -6,12 +6,22 @@ use egui_winit::{
   winit::{
     dpi::PhysicalSize,
     event::{ElementState, Event, KeyboardInput, StartCause, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoopWindowTarget},
+    event_loop::{ControlFlow, EventLoopWindowTarget, EventLoopClosed},
     window,
   },
 };
 
-use super::{EscherEvent, UI};
+use super::{
+  EscherEvent,
+  PartialEscherWindow,
+  EscherWindow,
+  EscherHierarchy,
+  UIType,
+  UI,
+  UIHierarchy,
+  util
+};
+
 use crate::wgpustate::WgpuState;
 
 
@@ -36,27 +46,22 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
 
   match event {
     Event::WindowEvent { window_id, event } if window_id==window.id() => {
-      if !win_state.on_event(&ctx, &event) {
+      let win_state_result = win_state.on_event(&ctx, &event);
+      if !win_state_result.consumed {
         match event {
           WindowEvent::Resized(PhysicalSize { width, height}) =>
             render_state.resize(Some(width), Some(height), None, win_state),
           WindowEvent::CloseRequested | WindowEvent::Destroyed => 
             *control_flow = ControlFlow::Exit,
           WindowEvent::KeyboardInput { input, .. } => {
-            if let KeyboardInput { virtual_keycode: Some(VirtualKeyCode::LControl), state,.. } = input {
-              ui_state.lctrl_modifier = state == ElementState::Pressed;
-            }
-            else if let KeyboardInput { virtual_keycode: Some(VirtualKeyCode::RControl), state,.. } = input {
-              ui_state.rctrl_modifier = state == ElementState::Pressed;
-            }
-            else if let KeyboardInput { virtual_keycode: Some(keycode), state: ElementState::Pressed,.. } = input {
+            if let KeyboardInput { virtual_keycode: Some(keycode), state: ElementState::Pressed,.. } = input {
               match keycode {
                 VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-                VirtualKeyCode::F10 => println!("FPS: {}", ui_state.get_fps()),
+                // VirtualKeyCode::F10 => println!("FPS: {}", ui_state.get_fps()),
                 _ => {}
               }
             }
-            if ui_state.ctrl_modifier() {
+            if false /*ui_state.modifier().ctrl()*/ {
               if let KeyboardInput { virtual_keycode: Some(keycode), state: ElementState::Pressed,.. } = input {
                 match keycode {
                   VirtualKeyCode::Plus | VirtualKeyCode::NumpadAdd => {
@@ -80,7 +85,9 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
           _ => {}
         }
       }
-      window.request_redraw();
+      if win_state_result.repaint {
+        window.request_redraw();
+      }
     },
     Event::DeviceEvent { .. } => {
       //TODO
@@ -92,7 +99,7 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
   
       let _did_render = render_state.redraw(|| {
         let raw_input = win_state.take_egui_input(&window);
-        let full_output = ctx.run(raw_input, |ctx| ui_state.ui(ctx));
+        let full_output = ctx.run(raw_input, |ctx| todo!()); //|ctx| ui_state.ui(ctx));
         let time_until_repaint = full_output.repaint_after;
         if time_until_repaint.is_zero() {
           *control_flow = ControlFlow::Poll;
@@ -114,7 +121,7 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
         false
       });
 
-      ui_state.update_fps();
+      // ui_state.update_fps();
     },
     Event::UserEvent(EscherEvent::Exit(err_code)) =>
       *control_flow = if err_code==0 {ControlFlow::Exit} else {ControlFlow::ExitWithCode(err_code as _)},
@@ -137,4 +144,35 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
   //   eprintln!("[{:?}] {:?}: {:?}", ((time::Instant::now() - *start_time()).as_secs_f32()*60.) as usize, *control_flow, event_str)
   // }
 }
+
+
+impl EscherHierarchy<UI, UIType> for UIHierarchy {
+  fn try_send_event(&self, event: EscherEvent) -> Result<(), EventLoopClosed<EscherEvent>> {
+    self.event_loop_proxy.send_event(event)
+  }
+
+  fn get_egui_winit_state(&self) -> &egui_winit::State {
+    &self.egui_winit_state
+  }
+
+  fn modifier(&self) -> &util::EventModifier {
+    &self.modifier
+  }
+
+  fn get_toplevel(&self) -> Rc<UI> {
+    self.toplevel.clone()
+  }
+
+  fn get_all_children(&mut self) -> &HashMap<window::WindowId, Rc<UI>> {
+    self.all_children_cache.get_or_insert_with(|| 
+      self.toplevel.clone().iter_over_all_children::<Vec<_>, _>()
+    )
+  }
+
+  fn handle_events(&mut self, event: Event<EscherEvent>, _window_target: &EventLoopWindowTarget<EscherEvent>, control_flow: &mut ControlFlow) {
+    let all_children = self.get_all_children();
+  }
+}
+
+
 

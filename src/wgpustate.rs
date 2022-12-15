@@ -252,7 +252,7 @@ impl WgpuState {
     (pipeline, texture_bind_group_layout, window_size_bind_group_layout)
   }
 
-  fn new_surface_update_binding(&self, texture_id: &TextureId, texture: &wgpu::Texture, tex_filter: wgpu::FilterMode) -> wgpu::BindGroup {
+  fn new_surface_update_binding(&self, texture_id: &TextureId, texture: &wgpu::Texture, min_filter: wgpu::FilterMode, mag_filter: wgpu::FilterMode) -> wgpu::BindGroup {
     self.device.create_bind_group(
       &wgpu::BindGroupDescriptor {
         label: Some(format!("surface_texture_bind_group {:?}", texture_id).as_str()),
@@ -267,8 +267,8 @@ impl WgpuState {
             binding: 1,
             resource: wgpu::BindingResource::Sampler(
               &self.device.create_sampler(&wgpu::SamplerDescriptor{
-                mag_filter: tex_filter,
-                min_filter: tex_filter,
+                mag_filter,
+                min_filter,
                 // mipmap_filter: tex_filter,
                 ..wgpu::SamplerDescriptor::default()
             })),
@@ -358,11 +358,15 @@ impl WgpuState {
           pixel_data
         );
 
-        let tex_filter = match img_delta.filter {
+        let min_filter = match img_delta.options.minification {
           egui::TextureFilter::Nearest => wgpu::FilterMode::Nearest,
           egui::TextureFilter::Linear => wgpu::FilterMode::Linear,
         };
-        let tex_binding = self.new_surface_update_binding(&texture_id, &tex, tex_filter);
+        let max_filter = match img_delta.options.magnification {
+          egui::TextureFilter::Nearest => wgpu::FilterMode::Nearest,
+          egui::TextureFilter::Linear => wgpu::FilterMode::Linear,
+        };
+        let tex_binding = self.new_surface_update_binding(&texture_id, &tex, min_filter, max_filter);
 
         // self.textures.insert(texture_id.clone(), (tex, tex_binding));
         res_full.push((texture_id, tex, tex_binding));
