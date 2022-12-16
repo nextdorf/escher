@@ -1,0 +1,2 @@
+# escher-hierarchy
+Hierarchy crate for escher. While writing the UI I realized having a hierarchical data structure with elements that mutate each other is not as simply as one might expect. The main problem is the borrowchecking of safe rustlang. Wrting the UI system itself without a dedicated hierarchy system is probably possible with RefCells and smart pointers, but since I'll heavely rely on hierarchies for my plugin system later on, it is probably a good learning experience to write this crate now.
