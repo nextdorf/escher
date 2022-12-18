@@ -15,4 +15,5 @@ env_logger = "*"
 
 image = "*"
 escher_video = { path = "src/video", version = "*" }
+escher-hierarchy = { path = "crates/escher-hierarchy", version = "*" }
 
