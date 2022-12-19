@@ -49,7 +49,11 @@ impl VisualsColorMap {
     mut_mapper(&mut visuals.code_bg_color);
     mut_mapper(&mut visuals.warn_fg_color);
     mut_mapper(&mut visuals.error_fg_color);
+
     Self::map_shadow(&mut visuals.window_shadow, mut_mapper);
+    mut_mapper(&mut visuals.window_fill);
+    Self::map_stroke(&mut visuals.window_stroke, mut_mapper);
+    mut_mapper(&mut visuals.panel_fill);
     Self::map_shadow(&mut visuals.popup_shadow, mut_mapper);
   }
 

@@ -117,7 +117,6 @@ impl UI {
     let window = partial_window.build(window_target).unwrap();
 
     let ctx = egui::Context::default();
-    //FIXME: Style change doesn't work anymore. Wrong ctx??
     let mut style = (*ctx.style()).clone();
     style.visuals = crate::util::VisualsColorMap::with_rgba_to_srgba(Some(style.visuals))
       .map_state()
