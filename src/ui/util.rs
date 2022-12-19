@@ -1,4 +1,4 @@
-use egui_winit::winit::event::WindowEvent;
+use egui_winit::winit::event::ModifiersState;
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Default)]
 pub struct EventModifier {
@@ -15,15 +15,10 @@ impl EventModifier {
   pub fn super_key(&self) -> bool { self.super_modifier }
 }
 
-pub fn update_event_modifier(modifier: &mut EventModifier, event: WindowEvent) {
-  match event {
-    WindowEvent::ModifiersChanged(mod_key) => {
-      modifier.ctrl_modifier = mod_key.ctrl();
-      modifier.shift_modifier = mod_key.shift();
-      modifier.alt_modifier = mod_key.alt();
-      modifier.super_modifier = mod_key.logo();
-    },
-    _ => {}
-  }
+pub fn update_event_modifier(modifier: &mut EventModifier, mod_key: ModifiersState) {
+  modifier.ctrl_modifier = mod_key.ctrl();
+  modifier.shift_modifier = mod_key.shift();
+  modifier.alt_modifier = mod_key.alt();
+  modifier.super_modifier = mod_key.logo();
 }
 

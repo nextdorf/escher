@@ -3,28 +3,27 @@ pub mod main;
 mod error;
 mod util;
 
-use std::{collections::HashMap, time, rc::{Rc, Weak}};
+use std::{collections::{HashMap, HashSet}, time};
 
 use egui_winit::{
   egui, 
   winit::{
-    self, 
     event_loop::{
-      EventLoopClosed,
       EventLoopWindowTarget,
-      ControlFlow, EventLoop, EventLoopProxy
+      ControlFlow, EventLoopProxy, EventLoop
     },
     window,
-    event::Event
+    event::{Event, WindowEvent}, dpi::PhysicalSize
   }
 };
 
+use super::hierarchy::{Entity, Hierarchy};
 // use crate::wgpustate::WgpuState;
 
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum EscherEvent {
-  RequestRedrawPath{ id: window::WindowId },
+  RequestRedrawPath{ id: UIId },
   Rescale(f32),
   Exit(u8),
 }
@@ -34,349 +33,174 @@ pub mod constants {
   pub const ZOOM_PLUS: f32 = 1.125;
 }
 
-/*
- * Was die Herarchien angeht: Von oben nach unten immer Refcounted referenzieren, von unten nach
- * oben immer schwach/optional referenzieren. Der Grund ist, dass beidseitiges refcounten zu
- * zirkularem Refcounten führt. Die Konsequenz: Daten halten sich indirekt selbst am Leben.
- * Bei beidseitigem weak-ref werden die Daten direkt bei Verlassen der Scopes/Moven der Owner
- * gedroppt. 
- */
 
-/// An abstraction over individual window types. Should be a sum type.
-pub trait PartialEscherWindow<H, W> : Sized where H: EscherHierarchy<W, Self>, W: EscherWindow<H, Self> {
-  fn get_owner(&self) -> Weak<W>;
-
-  /// The ui code which is run by egui
-  fn ui(&mut self, ctx: &egui::Context);
-}
-/// An abstraction over the abstract window type. We store PW as boxed Value 
-pub trait EscherWindow<H, PW> : Sized where H: EscherHierarchy<Self, PW>, PW: PartialEscherWindow<H, Self> {
-  fn as_rc(&self) -> Rc<Self>;
-
-  /// A reference to the window
-  fn get_native_window(&self) -> &window::Window;
-
-  /// The unique identifier of the window.
-  fn get_native_window_id(&self) -> window::WindowId {
-    self.get_native_window().id()
-  }
-
-
-  /// Reference to the implementation of the window
-  fn get_implementation(&self) -> &Box<PW>;
-  fn get_mut_implementation(&mut self) -> &mut Box<PW>;
-
-  /// Reference to the toplevel window
-  fn get_hierarchy(&self) -> Weak<H>;
-  // fn get_hierarchy(&self) -> &H;
-  // fn get_mut_hierarchy(&mut self) -> &mut H;
-
-  /// Reference to the parent window. If it is `None` then `self` should be its own toplevel. If it
-  /// is `Some(parent)` then `parent.get_children` should contain `self`.
-  fn get_parent(&self) -> Weak<Self>;
-  // fn get_parent(&self) -> Option<&Self>;
-  // fn get_mut_parent(&mut self) -> Option<&mut Self>;
-
-  /// A HashMap of all direct children
-  fn get_children(&self) -> &HashMap<window::WindowId, Rc<Self>>;
-  // fn get_mut_children(&mut self) -> &mut HashMap<window::WindowId, Self>;
-  /// Defacto `self.get_children().get_mut(..)`. If `None` then element does not exist.
-  fn access_child(&mut self, id: &window::WindowId) -> Option<&mut Self>;
-  /// Defacto `self.get_children().insert(..)` + some internal book keeping. Has to update its
-  /// hierarchy, too. If `Some` then there was an id collision. Probably means there is a bug in
-  /// winit/X11/wayland
-  fn insert_child(&mut self, child: Rc<Self>) -> Option<Rc<Self>>;
-  /// Defacto `self.get_children().remove(..)` + some internal book keeping. Has to update its
-  /// hierarchy, too. If `None` then there is no item with said `id`
-  fn remove_child(&mut self, id: &window::WindowId) -> Option<Rc<Self>>;
-
-  /// Iterates over all children. `InnerT` refers to the type which used internally to cast the
-  /// children into. `ResultT` refers to the resulting type.
-  fn iter_over_all_children<InnerT, ResultT>(&self) -> ResultT where
-    InnerT: FromIterator<(window::WindowId, Rc<Self>)> + IntoIterator<Item = (window::WindowId, Rc<Self>)>,
-    ResultT: FromIterator<(window::WindowId, Rc<Self>)>
-  {
-    let self_window = std::iter::once((
-      self.get_native_window_id(),
-      self.as_rc().clone()
-    ));
-    let children = self.get_children();
-    if children.is_empty() {
-      self_window.collect()
-    } else {
-      self_window.chain(children.values().flat_map(|c| c.iter_over_all_children::<InnerT, InnerT>())).collect()
-    }
-  }
-
-
-  /// Removes child with id `child_id` and adds it as a child to `new_parent`.
-  fn reparent_child(&mut self, child_id: window::WindowId, new_parent: &mut Self) -> Result<(), error::HierarchyError> {
-    match self.remove_child(&child_id) {
-      Some(child) => {
-        if let Some(collision) = new_parent.insert_child(child) {
-          panic!("Bug in winit: window id collision for {:?}", collision.get_native_window_id())
-        } else {
-          Ok(())
-        }
-      },
-      None => Err(error::HierarchyError::PathNotFound)
-    }
-  }
-
-  /// Removes child with id `child_id` and adds it as a child to the `UI` found at `start.access_child(path[0]).access_child(path[1]).(..)`.
-  /// If `is_relative` then `start` is `self`, otherwise `start` is `toplevel`.
-  fn reparent_child_at(&mut self, child_id: window::WindowId, new_parent_id: window::WindowId) -> Result<(), error::HierarchyError> {
-    if let Some(hierarchy) = self.get_hierarchy().upgrade() {
-      if let Some(new_parent) = hierarchy.get_all_children().get_mut(&new_parent_id) {
-        self.reparent_child(child_id, new_parent)
-      } else {
-        Err(error::HierarchyError::PathNotFound)
-      }
-    } else {
-      Err(error::HierarchyError::HierarchyNotFound)
-    }
-  }
-
-  fn reparent_child_to(&mut self, child_id: window::WindowId, path: Vec<window::WindowId>, is_relative: bool) -> Result<(), error::HierarchyError> {
-    match self.lookup_child(path, is_relative) {
-      Ok(new_parent) => self.reparent_child(child_id, &mut new_parent),
-      Err(e) => Err(e),
-    }
-  }
-
-  fn lookup_child(&self, path: Vec<window::WindowId>, is_relative: bool) -> Result<Rc<Self>, error::HierarchyError> {
-    if is_relative {
-      let mut current = self;
-      for id in path {
-        if let Some(next) = current.get_children().get(&id) {
-          current = next.as_ref();
-        } else {
-          return Err(error::HierarchyError::PathNotFound);
-        }
-      }
-      Ok(current.as_rc())
-    } else if let Some(hierarchy) = self.get_hierarchy().upgrade() {
-      hierarchy.get_toplevel().lookup_child(path, true)
-    } else {
-      Err(error::HierarchyError::HierarchyNotFound)
-    }
-  }
-
-  fn get_ctx(&self) -> &egui::Context;
-
-  fn run_ui_ctx(&mut self, raw_input: egui::RawInput) -> egui::FullOutput {
-    let ui_impl = self.get_implementation().as_mut();
-    self.get_ctx().run(raw_input, |ctx| ui_impl.ui(ctx))
-  }
-}
-
-/// Stores information about the toplevel window and all its children and handles window events
-pub trait EscherHierarchy<W, PW> : Sized where W: EscherWindow<Self, PW>, PW: PartialEscherWindow<Self, W> {
-  /// Emits an event.
-  /// 
-  /// # Example
-  /// `event_loop_proxy.send_event(event)`
-  fn try_send_event(&self, event: EscherEvent) -> Result<(), EventLoopClosed<EscherEvent>>;
-
-  /// Similar to `try_send_event` but ignores errors.
-  fn send_event(&self, event: EscherEvent) {
-    self.try_send_event(event).unwrap_or_default()
-  }
-
-  fn get_egui_winit_state(&self) -> &egui_winit::State;
-
-  /// Stores the modifier keys between window events, like ctrl, shift, alt, super
-  fn modifier(&self) -> &util::EventModifier;
-
-  fn get_toplevel(&self) -> Rc<W>;
-
-  fn get_all_children(&mut self) -> &HashMap<window::WindowId, Rc<W>>;
-
-  fn handle_events(&mut self, event: Event<EscherEvent>, _window_target: &EventLoopWindowTarget<EscherEvent>, control_flow: &mut ControlFlow);
-}
-
-
-// // impl<W, H, PW> Ord for W where W: EscherWindow<H, PW>, H: EscherHierarchy<W, PW>, PW: PartialEscherWindow<H, W> {
-// impl<H, PW> Ord for EscherWindow<H, PW> {
-//   fn cmp(&self, other: &Self) -> cmp::Ordering {
-//     self.get_native_window_id().cmp(&other.get_native_window_id())
-//   }
-// }
-// impl<W, H, PW> PartialOrd for W where W: EscherWindow<H, PW> {
-//   fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-//     Some(self.cmp(other))
-//   }
-// }
-// impl<W, H, PW> PartialEq for W where W: EscherWindow<H, PW> {
-//   fn eq(&self, other: &Self) -> bool {
-//     self.get_native_window_id() == other.get_native_window_id()
-//   }
-// }
-// impl<W, H, PW> Eq for W where W: EscherWindow<H, PW> { }
-
-
-/// The sum type over all possible kinds of windows. It handles the window-kind specific code
-/// and variables. Every reference should hold an implementation of the PartialEscherWindow trait
 pub enum UIType {
-  Main(main::MainEscherWindow),
+  Main(Box<main::MainWindow>),
+  // Dynamic(Box<dyn Entity>),
 } 
 
 /// Generic abstraction over UIType. It handles the window system and window hierarchy. For the
 /// specification see `ui_state: UIType<'inner>`
 pub struct UI {
-  rc_self: Weak<Self>,
-  ctx: egui::Context,
-  ui_implementation: Option<Box<UIType>>,
-  window: window::Window,
-  hierarchy: Weak<UIHierarchy>,
-  parent: Weak<UI>,
-  children: HashMap<window::WindowId, Rc<UI>>,
+  pub ctx: egui::Context,
+  pub ui_impl: Option<UIType>,
+  pub window: window::Window,
 }
 
-pub struct UIHierarchy {
+pub struct UIState {
   event_loop_proxy: EventLoopProxy<EscherEvent>,
   modifier: util::EventModifier,
-  egui_winit_state: egui_winit::State,
-  toplevel: Rc<UI>,
-  all_children_cache: Option<HashMap<window::WindowId, Rc<UI>>>,
+  toplevel_id: UIId,
 
   fps: f64,
   last_frame_time: time::Instant,
 }
 
-impl PartialEscherWindow<UIHierarchy, UI> for UIType {
-  fn ui(&mut self, ctx: &egui::Context) {
-    match self {
-      Self::Main(w) => w.ui(ctx),
-    }
+pub struct UIHierarchy {
+  state: UIState,
+  entities: HashMap<window::WindowId, UI>,
+}
+
+pub struct UIInput<'a> {
+  pub event: Event<'a, EscherEvent>,
+  pub window_target: &'a EventLoopWindowTarget<EscherEvent>,
+  pub control_flow: &'a mut ControlFlow,
+}
+
+pub struct UIResult {}
+
+pub struct UIError {}
+
+pub type UIId = window::WindowId;
+
+impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult, UIError, UIHierarchy> for UI {
+  fn get_id(&self) -> UIId {
+    self.window.id()
   }
 
-  fn get_owner(&self) -> Weak<UI> {
-    match self {
-      Self::Main(w) => w.owning_ui,
+  fn run(&mut self, state: &UIState, input: &UIInput) -> Option<UIResult> {
+    if let Some(ui_impl) = &mut self.ui_impl {
+      // match ui_impl {
+      //   UIType::Main(w) => w.as_mut().ui(&self.ctx, state),
+      // };
+      None
+    } else {
+      None
     }
   }
 }
 
-impl EscherWindow<UIHierarchy, UIType> for UI {
-  fn as_rc(&self) -> Rc<Self> {
-    self.rc_self.upgrade().unwrap()
+impl<'a> Hierarchy<UIId, UI, UIInput<'a>, UIState, UIResult, UIError> for UIHierarchy {
+  fn get_state(&self) -> &UIState {
+    &self.state
   }
 
-  fn get_native_window(&self) -> &window::Window {
-    &self.window
+  fn update_entities<F, G>(&mut self, f: F) -> G where F: Fn(HashMap<UIId, UI>) -> (G, HashMap<UIId, UI>) {
+    let res;
+    let entities = std::mem::take(&mut self.entities);
+    (res, self.entities) = f(entities);
+    res
   }
 
-  fn get_implementation(&self) -> &Box<UIType> {
-    &self.ui_implementation.expect("UI was not implemented")
-  }
-  fn get_mut_implementation(&mut self) -> &mut Box<UIType> {
-    &mut self.ui_implementation.expect("UI was not implemented")
+  fn access_entity(&mut self, id: &UIId) -> Option<&mut UI> {
+    self.entities.get_mut(id)
   }
 
-  fn get_hierarchy(&self) -> Weak<UIHierarchy> {
-    self.hierarchy.clone()
+  fn accumulate_results(&mut self, results: Vec<UIResult>) -> Result<Option<(Option<HashSet<UIId>>, UIInput<'a>)>, UIError> {
+    todo!()
   }
+}
 
 
-  fn get_parent(&self) -> Weak<Self> {
-    self.parent.clone()
-  }
+impl UI {
+  pub fn new(partial_window: window::WindowBuilder, ui_impl: Option<UIType>, window_target: &EventLoopWindowTarget<EscherEvent>, scale_factor: f32) -> Self {
+    let window = partial_window.build(window_target).unwrap();
 
-  fn get_children(&self) -> &HashMap<window::WindowId, Rc<Self>> {
-    &self.children
-  }
-
-  fn access_child(&mut self, id: &window::WindowId) -> Option<&mut Self> {
-    match self.children.get_mut(id) {
-      Some(ch) => Some(ch),
-      None => None
-    }
-  }
-
-  fn insert_child(&mut self, child: Rc<Self>) -> Option<Rc<Self>> {
-    if let Some(hierarchy) = self.hierarchy.upgrade() {
-      hierarchy.all_children_cache = None;
-    }
-    self.children.insert(child.get_native_window_id(), child)
-  }
-
-  fn remove_child(&mut self, id: &window::WindowId) -> Option<Rc<Self>> {
-    if let Some(hierarchy) = self.hierarchy.upgrade() {
-      hierarchy.all_children_cache = None;
-    }
-    self.children.remove(id)
-  }
-
-  fn get_ctx(&self) -> &egui::Context {
-    &self.ctx
-  }
-
+    let ctx = egui::Context::default();
+    //FIXME: Style change doesn't work anymore. Wrong ctx??
+    let mut style = (*ctx.style()).clone();
+    style.visuals = crate::util::VisualsColorMap::with_rgba_to_srgba(Some(style.visuals))
+      .map_state()
+      .unwrap();
+    ctx.set_style(style);
   
+    Self {
+      ctx,
+      ui_impl,
+      window
+    }
+  }
+
+  pub fn redraw(&mut self, state: &UIState) {
+    match &mut self.ui_impl {
+      Some(UIType::Main(main_window)) => main_window.redraw(&self.ctx, &self.window, state),
+      None => {},
+    }
+  }
+
+  pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
+    match &mut self.ui_impl {
+      None => false,
+      Some(UIType::Main(main_window)) => {
+        let egui_winit_state_result = main_window.egui_winit_state.on_event(&self.ctx, &event);
+        if egui_winit_state_result.consumed {
+          match event {
+            WindowEvent::Resized(PhysicalSize { width, height}) =>
+              main_window.resize(Some(*width), Some(*height), None),
+            _ => {}
+          }
+        }
+        if egui_winit_state_result.repaint {
+          self.window.request_redraw();
+        }
+        egui_winit_state_result.consumed
+      }
+    }
+  }
+
 }
 
 
 impl UIHierarchy {
-  pub fn new(event_loop: &EventLoop<EscherEvent>) -> Self {
-    let toplevel = todo!();
-    let egui_winit_state = egui_winit::State::new(event_loop);
-    egui_winit_state.set_pixels_per_point(constants::ZOOM_100);
-    
-    Self {
-      event_loop_proxy: event_loop.create_proxy(),
-      modifier: util::EventModifier::default(),
-      egui_winit_state,
-      toplevel,
-      all_children_cache: None,
-      fps: 60.,
-      last_frame_time: time::Instant::now(),
+  pub fn handle_events(&mut self, event: Event<EscherEvent>, _window_target: &EventLoopWindowTarget<EscherEvent>, control_flow: &mut ControlFlow) {
+    match event {
+      Event::WindowEvent { window_id, event } => {
+        let is_consumed = match self.access_entity(&window_id) {
+          Some(ui_val) => ui_val.handle_window_event(&event),
+          None => false,
+        };
+        if !is_consumed {
+          match event {
+            WindowEvent::CloseRequested | WindowEvent::Destroyed if window_id == self.state.toplevel_id =>
+              *control_flow = ControlFlow::Exit,
+            WindowEvent::ModifiersChanged(modifier_state) =>
+              util::update_event_modifier(&mut self.state.modifier, modifier_state),
+            _ => {}
+          }
+        }
+      },
+      Event::UserEvent(EscherEvent::Exit(err_code)) =>
+        *control_flow = ControlFlow::ExitWithCode(err_code as _),
+      Event::RedrawRequested(id) => if let Some(ui_impl) = self.entities.get_mut(&id) {
+        ui_impl.redraw(&self.state)
+      }
+      _ => {}
     }
   }
-}
 
-impl UI {
-  pub fn new(event_loop_deref: &EventLoopWindowTarget<EscherEvent>, hierarchy: Weak<UIHierarchy>,
-    window_builder: window::WindowBuilder, ui_implementation: Option<Box<UIType>>) -> Result<Rc<Self>, winit::error::OsError>
-  {
-    let ctx = egui::Context::default();
-    ctx.set_style({
-      let mut style = (*ctx.style()).clone();
-      style.visuals = crate::util::VisualsColorMap::with_rgba_to_srgba(Some(style.visuals))
-        .map_state()
-        .unwrap();
-      style
-    });
+  pub fn new_escher_ui(event_loop: &EventLoop<EscherEvent>, scale_factor: f32) -> Self {
+    let main_ui = main::MainWindow::new(&event_loop, scale_factor);
+    let main_id = main_ui.get_id();
+    let entities = HashMap::from([(main_id, main_ui)]);
 
-    let window = window_builder.build(event_loop_deref)?;
-  
-    Ok(Rc::new_cyclic(|weak| Self {
-      rc_self: weak.clone(),
-      ctx,
-      ui_implementation,
-      window,
-      hierarchy,
-      parent: Weak::new(),
-      children: HashMap::default()
-    }))
+    let state = UIState {
+      event_loop_proxy: event_loop.create_proxy(),
+      modifier: util::EventModifier::default(),
+      toplevel_id: main_id,
+      fps: 60.,
+      last_frame_time: time::Instant::now(),
+    };
+
+    Self { state, entities }
   }
-  
-  pub fn new_main(event_loop_deref: &EventLoopWindowTarget<EscherEvent>, hierarchy: Weak<UIHierarchy>) -> Rc<Self> {
-    let window_builder = winit::window::WindowBuilder::new()
-      .with_decorations(true)
-      .with_resizable(true)
-      .with_transparent(false)
-      .with_title("escher")
-      .with_inner_size(winit::dpi::PhysicalSize {
-        width: 45*16,
-        height: 45*9,
-      });
-
-    let mut ret = Self::new(event_loop_deref, hierarchy, window_builder, None).unwrap();
-    ret.ui_implementation = Some(Box::new(UIType::Main(
-      main::MainEscherWindow::new(Rc::downgrade(&ret)).unwrap()
-    )));
-    ret
-  }
-  
 }
-

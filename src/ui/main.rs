@@ -1,32 +1,60 @@
-use std::{time, collections::HashMap, rc::{Weak, Rc}};
 use epaint::TextureHandle;
 use egui_winit::{
   egui,
   winit::{
-    event::{Event, WindowEvent},
+    self,
     event_loop::{
       EventLoopProxy,
       EventLoopWindowTarget,
-      ControlFlow
     },
     window,
   }
 };
 use crate::wgpustate::WgpuState;
 
-use super::{EscherEvent, PartialEscherWindow, UI, EscherWindow, util, UIHierarchy, EscherHierarchy};
+use super::{EscherEvent, UIState, UIType, UI};
 
-pub struct MainEscherWindow {
-  pub(super) owning_ui: Weak<UI>,
+pub struct MainWindow {
   pub img_hnd: Vec<TextureHandle>,
   test_var: usize,
   pub license_status: bool,
   render_state: WgpuState,
+  pub(super) egui_winit_state: egui_winit::State,
 }
 
-impl MainEscherWindow {
-  pub fn ui(&mut self, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| self.ui_menu_bar(ctx, ui));
+impl MainWindow {
+  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState) {
+
+    self.render_state.update_window_size_bind_group(false);
+    let current_frame = match self.render_state.get_current_frame() {
+      Ok(frame) => frame,
+      Err(_) => return
+    };
+
+    let raw_input = self.egui_winit_state.take_egui_input(window);
+    let full_output = ctx.run(raw_input, |ctx| self.ui(ctx, state));
+    let _time_until_repaint = full_output.repaint_after;
+
+    //TODO: construct Result and tell it when to repaint using time_until_repaint
+
+    self.egui_winit_state.handle_platform_output(window, ctx, full_output.platform_output);
+    let paint_jobs = ctx.tessellate(full_output.shapes);
+    let texture_delta = full_output.textures_delta;
+
+    let _did_render = match self.render_state.redraw(current_frame, texture_delta, paint_jobs) {
+      Some(()) => true,
+      None => {eprintln!("Incomplete rendering!"); false}
+    };
+  }
+
+  pub fn resize(&mut self, width: Option<u32>, height: Option<u32>, scale: Option<f32>) {
+    self.render_state.resize(width, height, scale, &mut self.egui_winit_state)
+  }
+
+  fn ui(&mut self, ctx: &egui::Context, state: &UIState) {
+    egui::TopBottomPanel::top("menu_bar").show(ctx, |ui|
+      self.ui_menu_bar(ui, &state.event_loop_proxy)
+    );
     
     egui::CentralPanel::default().show(ctx, |ui| {
       ui.label("Top text");
@@ -49,20 +77,28 @@ impl MainEscherWindow {
     self.show_dialogs(ctx);
   }
 
-  pub fn get_owner(&self) -> Weak<UI> {
-    self.owning_ui.clone()
-  }
-  
-  pub fn new(owning_ui: Weak<UI>) -> Option<Self> {
-    let (owning_ui, hierarchy) = match owning_ui.upgrade() {
-      Some(owner) => match owner.hierarchy.upgrade() {
-        Some(hierarchy) => (owner, hierarchy),
-        None => return None
-      },
-      None => return None
-    };
+  pub fn new(window_target: &EventLoopWindowTarget<EscherEvent>, scale_factor: f32) -> UI {
+    let mut res = UI::new(
+      window::WindowBuilder::new()
+        .with_decorations(false)
+        .with_resizable(true)
+        .with_transparent(true)
+        .with_title("escher")
+        .with_inner_size(winit::dpi::PhysicalSize {
+          width: 45*16,
+          height: 45*9,
+        }),
+      None,
+      window_target,
+      scale_factor
+    );
+
+    let mut egui_winit_state = egui_winit::State::new(window_target);
+    egui_winit_state.set_pixels_per_point(scale_factor);
+    let render_state = WgpuState::new(&res.window, scale_factor).unwrap();
+
     let img_hnd = vec![
-      owning_ui.ctx.load_texture("uv_texture",
+      res.ctx.load_texture("uv_texture",
         (|| {
           let size = [256, 256];
           let mut rgba = Vec::with_capacity(size[0]*size[1]*4);
@@ -80,40 +116,29 @@ impl MainEscherWindow {
           egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_slice())
         })(),
         egui::TextureOptions::default()),
-        owning_ui.ctx.load_texture("sample_texture",
+        res.ctx.load_texture("sample_texture",
         egui::ColorImage::example(),
         egui::TextureOptions::default()),
     ];
 
-    let surface_scale = hierarchy.egui_winit_state.pixels_per_point();
-    let render_state = WgpuState::new(&owning_ui.window, surface_scale).unwrap();
-    //  set_pixels_per_point(super::constants::ZOOM_100);
-  
-    Some(Self {
-      img_hnd,
-      test_var: 0,
-      owning_ui: Rc::downgrade(&owning_ui),
-      license_status: false,
-      render_state,
-    })
+    res.ui_impl = Some(UIType::Main(Box::new(
+      Self {
+        img_hnd,
+        test_var: 0,
+        license_status: false,
+        render_state,
+        egui_winit_state,
+      }
+    )));
+    res
   }
 
-  pub fn send_event(&self, event: EscherEvent) -> bool {
-    match self.owning_ui.upgrade() {
-      Some(owner) => match owner.hierarchy.upgrade() {
-        Some(hierarchy) => hierarchy.try_send_event(event).is_ok(),
-        None => false
-      },
-      None => false
-    }
-  }
-
-  pub fn ui_menu_bar(&mut self, _ctx: &egui::Context, ui: &mut egui::Ui) {
+  pub fn ui_menu_bar(&mut self, ui: &mut egui::Ui, event_proxy: &EventLoopProxy<EscherEvent>) {
     egui::menu::bar(ui, |ui| {
       ui.menu_button("File", |ui| {
         ui.separator();
         if ui.button("Exit").clicked() {
-          self.send_event(EscherEvent::Exit(0));
+          event_proxy.send_event(EscherEvent::Exit(0)).unwrap();
         }
       });
 

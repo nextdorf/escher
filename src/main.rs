@@ -32,21 +32,33 @@ fn setup_egui_winit(event_loop: &EventLoop<ui::EscherEvent>) -> (Window, egui_wi
   (window, win_state, egui_ctx)
 }
 
+// fn main() {
+//   env_logger::init();
+//   let event_loop = EventLoopBuilder::<ui::EscherEvent>::with_user_event().build();
+
+//   let (window, mut win_state, egui_ctx) = setup_egui_winit(&event_loop);
+//   let mut ui_state = ui::UI::new(event_loop.create_proxy(), &egui_ctx);
+//   let mut render_state = WgpuState::new(&window, ui::constants::ZOOM_100).unwrap();
+//   win_state.set_pixels_per_point(ui::constants::ZOOM_100);
+
+
+//   event_loop.run(move |event, window_target, control_flow|
+//     ui::event::handle_events(event, window_target, control_flow, &window, &mut win_state, &egui_ctx, &mut render_state, &mut ui_state)
+//   );
+// }
+
 fn main() {
   env_logger::init();
   let event_loop = EventLoopBuilder::<ui::EscherEvent>::with_user_event().build();
 
-  let (window, mut win_state, egui_ctx) = setup_egui_winit(&event_loop);
-  let mut ui_state = ui::UI::new(event_loop.create_proxy(), &egui_ctx);
-  let mut render_state = WgpuState::new(&window, ui::constants::ZOOM_100).unwrap();
-  win_state.set_pixels_per_point(ui::constants::ZOOM_100);
-
-
-  event_loop.run(move |event, window_target, control_flow|
-    ui::event::handle_events(event, window_target, control_flow, &window, &mut win_state, &egui_ctx, &mut render_state, &mut ui_state)
+  let mut ui_hierarchy = ui::UIHierarchy::new_escher_ui(
+    &event_loop,
+    ui::constants::ZOOM_100,
   );
 
-
+  event_loop.run(move |event, window_target, control_flow|
+    ui_hierarchy.handle_events(event, window_target, control_flow)
+  );
 }
 
 

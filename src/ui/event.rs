@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time, rc::Rc};
+use std::time;
 
 use egui_winit::{
   egui,
@@ -6,20 +6,16 @@ use egui_winit::{
   winit::{
     dpi::PhysicalSize,
     event::{ElementState, Event, KeyboardInput, StartCause, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoopWindowTarget, EventLoopClosed},
+    event_loop::{ControlFlow, EventLoopWindowTarget},
     window,
   },
 };
 
 use super::{
   EscherEvent,
-  PartialEscherWindow,
-  EscherWindow,
-  EscherHierarchy,
-  UIType,
   UI,
-  UIHierarchy,
-  util
+  UIState,
+  UIInput
 };
 
 use crate::wgpustate::WgpuState;
@@ -97,7 +93,7 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
     Event::RedrawRequested(..) => {
       render_state.update_window_size_bind_group(false);
   
-      let _did_render = render_state.redraw(|| {
+      let _did_render = render_state.redraw_old(|| {
         let raw_input = win_state.take_egui_input(&window);
         let full_output = ctx.run(raw_input, |ctx| todo!()); //|ctx| ui_state.ui(ctx));
         let time_until_repaint = full_output.repaint_after;
@@ -146,33 +142,7 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
 }
 
 
-impl EscherHierarchy<UI, UIType> for UIHierarchy {
-  fn try_send_event(&self, event: EscherEvent) -> Result<(), EventLoopClosed<EscherEvent>> {
-    self.event_loop_proxy.send_event(event)
-  }
-
-  fn get_egui_winit_state(&self) -> &egui_winit::State {
-    &self.egui_winit_state
-  }
-
-  fn modifier(&self) -> &util::EventModifier {
-    &self.modifier
-  }
-
-  fn get_toplevel(&self) -> Rc<UI> {
-    self.toplevel.clone()
-  }
-
-  fn get_all_children(&mut self) -> &HashMap<window::WindowId, Rc<UI>> {
-    self.all_children_cache.get_or_insert_with(|| 
-      self.toplevel.clone().iter_over_all_children::<Vec<_>, _>()
-    )
-  }
-
-  fn handle_events(&mut self, event: Event<EscherEvent>, _window_target: &EventLoopWindowTarget<EscherEvent>, control_flow: &mut ControlFlow) {
-    let all_children = self.get_all_children();
-  }
+pub fn handle_events_ui(entity: &mut UI, state: &UIState, input: &UIInput) {
+  todo!()
 }
-
-
 

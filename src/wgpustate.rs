@@ -458,10 +458,18 @@ impl WgpuState {
   }
 
 
-  pub fn redraw(&mut self, f: impl FnOnce() -> (TexturesDelta, Vec<ClippedPrimitive>)) -> Option<()> {
+  pub fn get_current_frame(&self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+    self.surface.get_current_texture()
+  }
+
+  #[deprecated(note="use redraw instead")]
+  pub fn redraw_old(&mut self, f: impl FnOnce() -> (TexturesDelta, Vec<ClippedPrimitive>)) -> Option<()> {
     let current_frame = self.surface.get_current_texture().ok()?;
     let (texture_delta, paint_jobs) = f();
+    self.redraw(current_frame, texture_delta, paint_jobs)
+  }
 
+  pub fn redraw(&mut self, current_frame: wgpu::SurfaceTexture, texture_delta: TexturesDelta, paint_jobs: Vec<ClippedPrimitive>) -> Option<()> {
     let window_size_bind_group_store;
     let window_size_bind_group = match self.window_size_bind_group.as_ref() {
       Some(bind_group) => bind_group,
