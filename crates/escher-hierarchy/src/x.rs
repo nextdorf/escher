@@ -38,7 +38,7 @@ impl fmt::Debug for HX {
   }
 }
 
-impl Entity<usize, f64, (), f64, (), HX> for X {
+impl Entity<usize, f64, (), f64> for X {
   fn get_id(&self) -> usize {
     self.id
   }
@@ -66,19 +66,12 @@ impl Entity<usize, f64, (), f64, (), HX> for X {
 
 
 impl Hierarchy<usize, X, f64, (), f64, ()> for HX {
-  fn get_state(&self) -> &() {
-    &()
+  fn represent(&self, _state_kind: InteriorKind, _entities_kind: InteriorKind) -> (InteriorRef<()>, InteriorRef<HashMap<usize, X>>) {
+    (InteriorRef::Owning(()), InteriorRef::AsRef(&self.entities))
   }
 
-  fn update_entities<F, G>(&mut self, f: F) -> G where F: Fn(HashMap<usize, X>) -> (G, HashMap<usize, X>) {
-    let res;
-    let entities = std::mem::take(&mut self.entities);
-    (res, self.entities) = f(entities);
-    res
-  }
-
-  fn access_entity(&mut self, id: &usize) -> Option<&mut X> {
-    self.entities.get_mut(id)
+  fn represent_mut<'a, 'b, 'c: 'a + 'b>(&'c mut self, _state_kind: InteriorKind, _entities_kind: InteriorKind) -> (InteriorRef<'a, ()>, InteriorRef<'b, HashMap<usize, X>>) {
+    (InteriorRef::Owning(()), InteriorRef::AsMut(&mut self.entities))
   }
 
   fn accumulate_results(&mut self, _results: Vec<f64>) -> Result<Option<(Option<HashSet<usize>>, f64)>, ()> {

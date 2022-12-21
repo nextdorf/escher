@@ -1,8 +1,7 @@
 use std::{fmt::Debug, collections::{HashSet, HashMap}, hash::Hash};
 
 /// Should be a sum type
-pub trait Entity<Id, Input, State, Res, ResErr, H>: Sized where
-  H: Hierarchy<Id, Self, Input, State, Res, ResErr>,
+pub trait Entity<Id, Input, State, Res>: Sized where
   Id: Sized + Hash + Eq + Debug,
 {
   fn get_id(&self) -> Id;
@@ -11,76 +10,91 @@ pub trait Entity<Id, Input, State, Res, ResErr, H>: Sized where
 }
 
 
+pub enum InteriorKind {
+  None,
+  AsRef,
+  AsMut,
+  Owning,
+}
+
+pub enum InteriorRef<'a, T> {
+  None,
+  AsRef(&'a T),
+  AsMut(&'a mut T),
+  Owning(T),
+}
+
+impl<'a, T> InteriorRef<'a, T> {
+  pub fn as_ref(&'a self) -> Option<&'a T> {
+    match self {
+      InteriorRef::AsRef(r) => Some(r),
+      InteriorRef::AsMut(r) => Some(r),
+      InteriorRef::Owning(x) => Some(x),
+      InteriorRef::None => None,
+    }
+  }
+  pub fn as_mut<'b: 'a>(&'b mut self) -> Option<&'a mut T> {
+    match self {
+      InteriorRef::AsMut(r) => Some(r),
+      InteriorRef::Owning(x) => Some(x),
+      _ => None
+    }
+  }
+  pub fn to_mut(self) -> Option<&'a mut T> {
+    match self {
+      InteriorRef::AsMut(r) => Some(r),
+      _ => None
+    }
+  }
+  pub fn own(self) -> Option<T> {
+    match self {
+      InteriorRef::Owning(x) => Some(x),
+      _ => None
+    }
+  }
+}
+
 
 pub trait Hierarchy<Id, E, Input, State, Res, ResErr>: Sized where 
-  E: Entity<Id, Input, State, Res, ResErr, Self>,
+  E: Entity<Id, Input, State, Res>,
   Id: Sized + Hash + Eq + Debug,
 {
-  fn get_state(&self) -> &State;
+  fn represent(&self, state_kind: InteriorKind, entities_kind: InteriorKind) -> (InteriorRef<State>, InteriorRef<HashMap<Id, E>>);
+  fn represent_mut<'a, 'b, 'c: 'a + 'b>(&'c mut self, state_kind: InteriorKind, entities_kind: InteriorKind) -> (InteriorRef<'a, State>, InteriorRef<'b, HashMap<Id, E>>);
 
-  /// This function is potentially unsafe. It breaks rust's mutability model unless the data behind
-  /// `get_state` and `update_entities` are independent. 
   fn map_entity_set<F>(&mut self, ids: &Option<HashSet<Id>>, input: &Input, f: F) -> Vec<Res> where F: Fn(&mut E, &State, &Input) -> Option<Res> {
-    let state;
-    let self_mut_res;
-    unsafe {
-      let self_ptr = self as *mut Self;
-      state = self_ptr.as_ref().unwrap().get_state();
-      self_mut_res = self_ptr.as_mut().unwrap();
-    }
+    let (interior_state, interior_entities) = self.represent_mut(InteriorKind::AsRef, InteriorKind::AsMut);
+    let (state, entities) = (interior_state.as_ref().unwrap(), interior_entities.to_mut().unwrap());
+    
+    let mut es = std::mem::take(entities);
+    let mut results;
     match ids {
-      // Some(ids) => self_mut_res.update_entities(|mut es| {
-      //   let mut results = Vec::with_capacity(ids.len());
-      //   for (id, e) in es.iter_mut() {
-      //     if !ids.contains(&id) {
-      //       continue;
-      //     } else if let Some(next_res) = f(e, state, input) {
-      //       // results.push(e.run(state, &input))
-      //       results.push(next_res);
-      //     }
-      //   }
-      //   (results, es)
-      // }),
-      Some(ids) => self_mut_res.update_entities(|mut es| {
-        let mut results = Vec::with_capacity(ids.len());
+      Some(ids) => {
+        results = Vec::with_capacity(ids.len());
         for id in ids.iter() {
           if let Some(e) = es.get_mut(id) {
             if let Some(next_res) = f(e, state, input) {
-              // results.push(e.run(state, &input))
               results.push(next_res);
-            }
-          }
-        }
-        (results, es)
-      }),
-      None => self_mut_res.update_entities(|mut es| {
-        let mut results = Vec::with_capacity(es.len());
+      }}}},
+      None => {
+        results = Vec::with_capacity(es.len());
         for e in es.values_mut() {
           if let Some(next_res) = f(e, state, input) {
-            // results.push(e.run(state, &input))
             results.push(next_res);
-          }
-        }
-        (results, es)
-      }),
+      }}},
     }
+    *entities = es;
+    results
   }
 
-  // fn iter_mut_entities(&mut self) -> collections::hash_map::IterMut<Id, E>;
-  /// Updates the `entities` attribute with `f: F`. `f` takes ownership of the entities, updates
-  /// the map and returns it together with a result. If the map is just represented by a
-  /// hashmap member, the function can be written like that:
-  /// ```
-  /// fn update_entities<F, G>(&mut self, f: F) -> G where F: Fn(HashMap<Id, E>) -> (G, HashMap<Id, E>) {
-  ///     let res;
-  ///     let entities = std::mem::take(&mut self.entities);
-  ///     (res, self.entities) = f(entities);
-  ///     res
-  /// }
-  /// ```
-  fn update_entities<F, G>(&mut self, f: F) -> G where F: Fn(HashMap<Id, E>) -> (G, HashMap<Id, E>);
 
-  fn access_entity(&mut self, id: &Id) -> Option<&mut E>;
+  fn access_entity<'a, 'b: 'a, 'c: 'a>(&'c mut self, id: &'b Id) -> Option<&'a mut E> {
+    let entity_repr = self.represent_mut(InteriorKind::AsRef, InteriorKind::AsMut).1;
+    match entity_repr.to_mut() {
+      Some(entity_mut) => entity_mut.get_mut(id),
+      None => None
+    }
+  }
 
   fn accumulate_results(&mut self, results: Vec<Res>) -> Result<Option<(Option<HashSet<Id>>, Input)>, ResErr>;
 
@@ -99,8 +113,6 @@ pub trait Hierarchy<Id, E, Input, State, Res, ResErr>: Sized where
       }
     }
   }
-}
-
-
+} //TODO: Add FullInput and FullOutput and move run out of the function for reference
 
 
