@@ -3,7 +3,7 @@ pub mod main;
 mod error;
 mod util;
 
-use std::{collections::{HashMap, HashSet}, time};
+use std::{collections::{HashMap, HashSet}, time, cmp};
 
 use egui_winit::{
   egui, 
@@ -45,6 +45,7 @@ pub struct UI {
   pub ctx: egui::Context,
   pub ui_impl: Option<UIType>,
   pub window: window::Window,
+  pub control_flow: ControlFlow,
   //TODO: Add the disired control flow as atttribute to entity
 }
 
@@ -82,16 +83,23 @@ pub struct UIInput<'a> {
 #[derive(Debug)]
 pub struct UIResult {
   id: UIId,
-  mutate_control_flow: Option<ControlFlow>, //TODO: Refactor this with Controlflow being owned by entity
+  mutate_control_flow: bool, //TODO: Refactor this with Controlflow being owned by entity
   fully_consumed_event: bool,
   drop: bool,
 }
 impl UIResult {
   pub fn default(id: UIId) -> Self {
-    Self { id, mutate_control_flow: None, fully_consumed_event: false, drop: false }
+    Self { id, mutate_control_flow: false, fully_consumed_event: false, drop: false }
   }
-  pub fn with(id: UIId, control_flow: ControlFlow) -> Self {
-    Self { id, mutate_control_flow: Some(control_flow), fully_consumed_event: false, drop: false }
+  pub fn with_new_control_flow(id: UIId) -> Self {
+    Self { id, mutate_control_flow: true, fully_consumed_event: false, drop: false }
+  }
+  pub fn maybe_with(id: UIId, mutate_control_flow: bool) -> Option<Self> {
+    if mutate_control_flow {
+      Some(Self::with_new_control_flow(id))
+    } else {
+      None
+    }
   }
 }
 
@@ -113,13 +121,15 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
     if let Some(ui_impl) = &mut self.ui_impl {
       match ui_impl {
         UIType::Main(main_window) => {
+          let main_window = main_window.as_mut();
           match input.kind {
-            UIInputKind::Redraw => Some(match main_window.redraw(&self.ctx, &self.window, state) {
+            UIInputKind::Redraw => match main_window.redraw(&self.ctx, &self.window, state, &mut self.control_flow) {
               main::MainWindowDrawRes::InvaldRenderFrame => todo!(),
-              main::MainWindowDrawRes::NoRedrawScheduled => UIResult::with(self.get_id(), ControlFlow::Wait),
-              main::MainWindowDrawRes::RedrawNextFrame => UIResult::with(self.get_id(), ControlFlow::Poll),
-              main::MainWindowDrawRes::RedrawScheduled(dtime) => UIResult::with(self.get_id(), ControlFlow::WaitUntil(state.current_time + dtime)),
-            }),
+              main::MainWindowDrawRes::NoRedrawScheduled(true) | main::MainWindowDrawRes::RedrawNextFrame(true)
+                | main::MainWindowDrawRes::RedrawScheduled(_) => Some(UIResult::with_new_control_flow(self.get_id())),
+              main::MainWindowDrawRes::NoRedrawScheduled(false) | main::MainWindowDrawRes::RedrawNextFrame(false) =>
+                None,
+            },
             UIInputKind::WindowEvent(event) => {
               let egui_winit_state_result = main_window.egui_winit_state.on_event(&self.ctx, &event);
               let mut drop_window = false;
@@ -137,7 +147,7 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
               if drop_window || egui_winit_state_result.consumed {
                 Some(UIResult {
                   id: self.get_id(), 
-                  mutate_control_flow: None,
+                  mutate_control_flow: false,
                   fully_consumed_event: egui_winit_state_result.consumed,
                   drop: drop_window,
                 })
@@ -158,7 +168,30 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
   }
 }
 
-impl<'event> Hierarchy<UIId, UI, UIInput<'event>, FullUIInput<'event>, UIState, UIResult, FullUIResult, UIError,> for UIHierarchy {
+fn cmp_control_flow(a: &ControlFlow, b: &ControlFlow) -> cmp::Ordering {
+  match a {
+    ControlFlow::ExitWithCode(_) => match b {
+      ControlFlow::ExitWithCode(_) => cmp::Ordering::Equal,
+      _ => cmp::Ordering::Less
+    },
+    ControlFlow::Poll => match b {
+      ControlFlow::ExitWithCode(_) => cmp::Ordering::Greater,
+      ControlFlow::Poll => cmp::Ordering::Equal,
+      _ => cmp::Ordering::Less,
+    },
+    ControlFlow::WaitUntil(time_a) => match b {
+      ControlFlow::ExitWithCode(_) | ControlFlow::Poll => cmp::Ordering::Greater,
+      ControlFlow::WaitUntil(time_b) => time_a.cmp(time_b),
+      ControlFlow::Wait => cmp::Ordering::Less,
+    },
+    ControlFlow::Wait => match b {
+      ControlFlow::Wait => cmp::Ordering::Equal,
+      _ => cmp::Ordering::Greater
+    },
+  }
+}
+
+impl<'event> Hierarchy<UIId, UI, UIInput<'event>, FullUIInput<'event>, FullUIInput<'event>, UIState, UIResult, FullUIResult, UIError,> for UIHierarchy {
   fn represent(&self, _state_kind: InteriorKind, _entities_kind: InteriorKind) -> (InteriorRef<UIState>, InteriorRef<HashMap<UIId, UI>>) {
     (InteriorRef::AsRef(&self.state), InteriorRef::AsRef(&self.entities))
   }
@@ -167,8 +200,31 @@ impl<'event> Hierarchy<UIId, UI, UIInput<'event>, FullUIInput<'event>, UIState, 
     (InteriorRef::AsMut(&mut self.state), InteriorRef::AsMut(&mut self.entities))
   }
 
-  fn accumulate_results(&mut self, results: Vec<UIResult>) -> Result<Option<(Option<HashSet<UIId>>, FullUIInput<'event>)>, UIError> {
-    todo!()
+  fn accumulate_results(&mut self, results: Vec<UIResult>, input: FullUIInput<'event>) -> Result<Option<(Option<HashSet<UIId>>, FullUIInput<'event>)>, UIError> {
+    let err = false;
+    let mut control_flow = None;
+    let entities: *mut HashMap<UIId, UI> = &mut self.entities as _;
+    for UIResult {id, mutate_control_flow, drop, ..} in results {
+      if drop {
+        unsafe{ entities.as_mut() }.unwrap().remove(&id);
+      } else if mutate_control_flow {
+        if let Some(entity) = unsafe { entities.as_ref() }.unwrap().get(&id) {
+          let current_control_flow = &entity.control_flow;
+          match control_flow {
+            Some(old_control_flow) if cmp_control_flow(old_control_flow, current_control_flow) != cmp::Ordering::Greater => {},
+            _ => control_flow = Some(current_control_flow),
+          }
+        }
+      }
+    }
+    if err {
+      Err(UIError)
+    } else if let Some(&control_flow) = control_flow {
+      *input.control_flow = control_flow;
+      Ok(Some((None, input)))
+    } else {
+      Ok(None)
+    }
   }
 
   fn run(&mut self, ids: Option<HashSet<UIId>>, input: FullUIInput<'event>) -> Result<FullUIResult, UIError> {
@@ -193,13 +249,14 @@ impl UI {
     Self {
       ctx,
       ui_impl,
-      window
+      window,
+      control_flow: ControlFlow::Poll,
     }
   }
 
   pub fn redraw(&mut self, state: &UIState) {
     match &mut self.ui_impl {
-      Some(UIType::Main(main_window)) => {main_window.redraw(&self.ctx, &self.window, state);},
+      Some(UIType::Main(main_window)) => {main_window.redraw(&self.ctx, &self.window, state, &mut self.control_flow);},
       None => {},
     }
   }

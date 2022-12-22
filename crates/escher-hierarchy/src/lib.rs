@@ -69,7 +69,7 @@ impl<'a, T> InteriorRef<'a, T> {
 }
 
 
-pub trait Hierarchy<Id, E, Input, FullInput, State, Res, FullRes, ResErr>: Sized where 
+pub trait Hierarchy<Id, E, Input, FullInput, InterInput, State, Res, FullRes, ResErr>: Sized where 
   E: Entity<Id, Input, State, Res>,
   Id: Sized + Hash + Eq + Debug,
 {
@@ -128,7 +128,7 @@ pub trait Hierarchy<Id, E, Input, FullInput, State, Res, FullRes, ResErr>: Sized
   /// returned the entire run is completed. If `Ok(Some(..))` is returned then there should be another
   /// run with `(..)` being the arguments for the next run. If `Err(ResErr)` is returned an error
   /// occurred
-  fn accumulate_results(&mut self, results: Vec<Res>) -> Result<Option<(Option<HashSet<Id>>, FullInput)>, ResErr>;
+  fn accumulate_results(&mut self, results: Vec<Res>, input: InterInput) -> Result<Option<(Option<HashSet<Id>>, FullInput)>, ResErr>;
 
   /// The running function of the entire hierarchy. Should do something like `prepare` - 
   /// `map FullInput to Input` - `call map_entity_set` - `call accumulate_results` - either
@@ -140,13 +140,13 @@ pub trait Hierarchy<Id, E, Input, FullInput, State, Res, FullRes, ResErr>: Sized
 
 /// Default implementation for Hierarchy<Id, E, Input, Input, State, Res, (), ResErr>::run
 pub fn run_hierarchy_default<H, Id, E, Input, State, Res, ResErr>(this: &mut H, ids: Option<HashSet<Id>>, input: Input) -> Result<(), ResErr>
-  where H : Hierarchy<Id, E, Input, Input, State, Res, (), ResErr>, E: Entity<Id, Input, State, Res>, Id: Sized + Hash + Eq + Debug
+  where H : Hierarchy<Id, E, Input, Input, Input, State, Res, (), ResErr>, E: Entity<Id, Input, State, Res>, Id: Sized + Hash + Eq + Debug
 {
   let mut ids = ids;
   let mut input = input;
   loop {
     let update_entities_res = this.map_entity_set(&ids, &input, |e, state, input| e.run(state, input));
-    match this.accumulate_results(update_entities_res) {
+    match this.accumulate_results(update_entities_res, input) {
       Ok(Some((new_ids, new_input))) => {
         ids = new_ids;
         input = new_input;

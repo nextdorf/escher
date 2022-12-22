@@ -5,7 +5,7 @@ use egui_winit::{
     self,
     event_loop::{
       EventLoopProxy,
-      EventLoopWindowTarget,
+      EventLoopWindowTarget, ControlFlow,
     },
     window,
   }
@@ -28,13 +28,13 @@ pub struct MainWindow {
 
 pub enum MainWindowDrawRes {
   InvaldRenderFrame,
-  NoRedrawScheduled,
-  RedrawNextFrame,
+  NoRedrawScheduled(bool),
+  RedrawNextFrame(bool),
   RedrawScheduled(time::Duration)
 }
 
 impl MainWindow {
-  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState) -> MainWindowDrawRes {
+  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState, control_flow: &mut ControlFlow) -> MainWindowDrawRes {
 
     self.render_state.update_window_size_bind_group(false);
     let current_frame = match self.render_state.get_current_frame() {
@@ -58,9 +58,19 @@ impl MainWindow {
     };
 
     if time_until_repaint.is_zero() {
-      MainWindowDrawRes::RedrawNextFrame
+      if *control_flow == ControlFlow::Poll {
+        MainWindowDrawRes::RedrawNextFrame(false)
+      } else {
+        *control_flow = ControlFlow::Poll;
+        MainWindowDrawRes::RedrawNextFrame(true)
+      }
     } else if time_until_repaint == time::Duration::MAX {
-      MainWindowDrawRes::NoRedrawScheduled
+      if *control_flow == ControlFlow::Wait {
+        MainWindowDrawRes::NoRedrawScheduled(false)
+      } else {
+        *control_flow = ControlFlow::Wait;
+        MainWindowDrawRes::NoRedrawScheduled(true)
+      }
     } else {
       MainWindowDrawRes::RedrawScheduled(time_until_repaint)
     }
