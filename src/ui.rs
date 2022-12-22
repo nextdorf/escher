@@ -13,7 +13,7 @@ use egui_winit::{
       ControlFlow, EventLoopProxy, EventLoop
     },
     window,
-    event::{Event, WindowEvent}, dpi::PhysicalSize
+    event::{Event, WindowEvent, StartCause}, dpi::PhysicalSize
   }
 };
 
@@ -23,7 +23,7 @@ use super::hierarchy::{Entity, Hierarchy, InteriorKind, InteriorRef};
 
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum EscherEvent {
-  RequestRedrawPath{ id: UIId },
+  RequestRedraw{ id: UIId },
   Rescale(f32),
   Exit(u8),
 }
@@ -106,6 +106,7 @@ impl UIResult {
 
 pub struct FullUIResult;
 
+#[derive(Debug)]
 pub struct UIError;
 
 pub type UIId = window::WindowId;
@@ -116,8 +117,8 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
   }
 
   fn run(&mut self, state: &UIState, input: &UIInput) -> Option<UIResult> {
-    //TODO: Pass desired control flow as mut ref
-
+    //TODO: Add modifier handling and rescaling.
+    //FIXME: Resizing doesnt work as intended.
     if let Some(ui_impl) = &mut self.ui_impl {
       match ui_impl {
         UIType::Main(main_window) => {
@@ -133,11 +134,16 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
             UIInputKind::WindowEvent(event) => {
               let egui_winit_state_result = main_window.egui_winit_state.on_event(&self.ctx, &event);
               let mut drop_window = false;
-              if egui_winit_state_result.consumed {
+              if !egui_winit_state_result.consumed {
                 match event {
                   WindowEvent::Resized(PhysicalSize { width, height}) =>
                     main_window.resize(Some(*width), Some(*height), None),
-                  WindowEvent::CloseRequested => drop_window = true, 
+                  WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size } =>
+                    main_window.resize(Some(new_inner_size.width), Some(new_inner_size.height), Some(*scale_factor as _)),
+                  WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                    state.event_loop_proxy.send_event(EscherEvent::Exit(0)).unwrap_or_default();
+                    drop_window = true
+                  },
                   _ => {}
                 }
               }
@@ -228,9 +234,87 @@ impl<'event> Hierarchy<UIId, UI, UIInput<'event>, FullUIInput<'event>, FullUIInp
   }
 
   fn run(&mut self, ids: Option<HashSet<UIId>>, input: FullUIInput<'event>) -> Result<FullUIResult, UIError> {
-    let FullUIInput { event, window_target, control_flow} = input;
+    // let FullUIInput { event, window_target, control_flow} = input;
     self.state.current_time = time::Instant::now();
-    todo!()
+    let mut results = Vec::new();
+    match &input.event {
+      Event::UserEvent(EscherEvent::Exit(err_code)) => *input.control_flow = ControlFlow::ExitWithCode(*err_code as _),
+      Event::MainEventsCleared => { },
+      Event::RedrawRequested(id) | Event::UserEvent(EscherEvent::RequestRedraw {id}) => {
+        if ids.is_none() || ids.unwrap().contains(&id) {
+          if let Some(ui) = self.entities.get_mut(&id) {
+            let ui_input = UIInput { kind: UIInputKind::Redraw, control_flow: input.control_flow };
+            if let Some(res) = ui.run(&self.state, &ui_input) {
+              results.push(res);
+            }
+          }
+        }
+      },
+      Event::WindowEvent { window_id: id, event } => {
+        if ids.is_none() || ids.unwrap().contains(&id) {
+          if let Some(ui) = self.entities.get_mut(&id) {
+            let ui_input = UIInput { kind: UIInputKind::WindowEvent(&event), control_flow: input.control_flow };
+            if let Some(res) = ui.run(&self.state, &ui_input) {
+              results.push(res);
+            }
+          }
+        }
+      },
+      Event::UserEvent(EscherEvent::Rescale(scale)) => {
+        let ui_input = UIInput {
+          kind: UIInputKind::Resize { width: None, height: None, scale: Some(*scale) },
+          control_flow: input.control_flow
+        };
+        match ids {
+          Some(ids) => {
+            results = Vec::with_capacity(ids.len());
+            for id in ids {
+              if let Some(ui) = self.entities.get_mut(&id) {
+                if let Some(res) = ui.run(&self.state, &ui_input) {
+                  results.push(res);
+                }
+              }
+            }
+          },
+          None => {
+            results = Vec::with_capacity(self.entities.len());
+            for ui in self.entities.values_mut() {
+              if let Some(res) = ui.run(&self.state, &ui_input) {
+                results.push(res);
+              }
+            }
+          },
+        }
+      },
+      Event::NewEvents(start_cause) => {
+        let req_time = match start_cause {
+          StartCause::Poll => Some(self.state.current_time),
+          StartCause::ResumeTimeReached { requested_resume, .. } => Some(*requested_resume),
+          _ => None
+        };
+        if let Some(req_time) = req_time {
+          // results = Vec::with_capacity(self.entities.len());
+          for ui in self.entities.values() {
+            let req_redraw = match ui.control_flow {
+              ControlFlow::Poll => true,
+              ControlFlow::WaitUntil(until_time) if until_time <= req_time => true,
+              _ => false,
+            };
+            if req_redraw {
+              ui.window.request_redraw();
+            }
+          }
+        }
+      },
+      Event::LoopDestroyed => println!("Escher is ending!"),
+      _ => {}
+    }
+    
+    match self.accumulate_results(results, input) {
+      Ok(None) => Ok(FullUIResult),
+      Ok(Some((ids, _new_input))) => {assert!(ids.is_none()); Ok(FullUIResult)},
+      Err(err) => Err(err),
+    }
   }
 }
 

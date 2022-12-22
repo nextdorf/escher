@@ -3,6 +3,7 @@
 use egui_winit::{egui, winit::{self, event_loop::{EventLoop, EventLoopBuilder}, window::Window}};
 
 use escher::{ui, util, wgpustate::WgpuState};
+use escher_hierarchy::Hierarchy;
 
 fn setup_egui_winit(event_loop: &EventLoop<ui::EscherEvent>) -> (Window, egui_winit::State, egui::Context){
   let window = winit::window::WindowBuilder::new()
@@ -57,7 +58,9 @@ fn main() {
   );
 
   event_loop.run(move |event, window_target, control_flow|
-    ui_hierarchy.handle_events(event, window_target, control_flow)
+    // ui_hierarchy.handle_events(event, window_target, control_flow)
+    ui_hierarchy.run(None, ui::FullUIInput { event, window_target, control_flow })
+      .and(Ok(())).unwrap()
   );
 }
 

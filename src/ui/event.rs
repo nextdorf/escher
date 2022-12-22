@@ -123,7 +123,7 @@ pub fn handle_events(event: Event<EscherEvent>, _window_target: &EventLoopWindow
       *control_flow = if err_code==0 {ControlFlow::Exit} else {ControlFlow::ExitWithCode(err_code as _)},
     Event::MainEventsCleared => {
     },
-    Event::UserEvent(EscherEvent::RequestRedrawPath { .. }) => {
+    Event::UserEvent(EscherEvent::RequestRedraw { .. }) => {
       *control_flow = ControlFlow::Poll;
       window.request_redraw();
     },
