@@ -10,74 +10,26 @@ use egui_winit::{
     window,
   }
 };
-use crate::wgpustate::WgpuState;
+use super::{EscherEvent, UIState, UIType, UI, simple::{SimpleWindow, WindowDrawRes}};
 
-use super::{EscherEvent, UIState, UIType, UI};
-
-use std::time;
 
 
 pub struct MainWindow {
   pub img_hnd: Vec<TextureHandle>,
   test_var: usize,
   pub license_status: bool,
-  render_state: WgpuState,
-  pub(super) egui_winit_state: egui_winit::State,
+  pub(super) inner: SimpleWindow,
 }
 
-
-pub enum MainWindowDrawRes {
-  InvaldRenderFrame,
-  NoRedrawScheduled(bool),
-  RedrawNextFrame(bool),
-  RedrawScheduled(time::Duration)
-}
 
 impl MainWindow {
-  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState, control_flow: &mut ControlFlow) -> MainWindowDrawRes {
-
-    self.render_state.update_window_size_bind_group(false);
-    let current_frame = match self.render_state.get_current_frame() {
-      Ok(frame) => frame,
-      Err(_) => return MainWindowDrawRes::InvaldRenderFrame
-    };
-
-    let raw_input = self.egui_winit_state.take_egui_input(window);
-    let full_output = ctx.run(raw_input, |ctx| self.ui(ctx, state));
-    let time_until_repaint = full_output.repaint_after;
-
-    //TODO: construct Result and tell it when to repaint using time_until_repaint
-
-    self.egui_winit_state.handle_platform_output(window, ctx, full_output.platform_output);
-    let paint_jobs = ctx.tessellate(full_output.shapes);
-    let texture_delta = full_output.textures_delta;
-
-    let _did_render = match self.render_state.redraw(current_frame, texture_delta, paint_jobs) {
-      Some(()) => true,
-      None => {eprintln!("Incomplete rendering!"); false}
-    };
-
-    if time_until_repaint.is_zero() {
-      if *control_flow == ControlFlow::Poll {
-        MainWindowDrawRes::RedrawNextFrame(false)
-      } else {
-        *control_flow = ControlFlow::Poll;
-        MainWindowDrawRes::RedrawNextFrame(true)
-      }
-    } else if time_until_repaint == time::Duration::MAX {
-      if *control_flow == ControlFlow::Wait {
-        MainWindowDrawRes::NoRedrawScheduled(false)
-      } else {
-        *control_flow = ControlFlow::Wait;
-        MainWindowDrawRes::NoRedrawScheduled(true)
-      }
-    } else {
-      MainWindowDrawRes::RedrawScheduled(time_until_repaint)
-    }
+  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState, control_flow: &mut ControlFlow) -> WindowDrawRes {
+    let inner = &mut unsafe {(self as *mut Self).as_mut()}.unwrap().inner;
+    inner.redraw(ctx, window, state, control_flow, |ctx, state| self.ui(ctx, state))
   }
 
   pub fn resize(&mut self, width: Option<u32>, height: Option<u32>, scale: Option<f32>) {
-    self.render_state.resize(width, height, scale, &mut self.egui_winit_state)
+    self.inner.resize(width, height, scale)
   }
 
   fn ui(&mut self, ctx: &egui::Context, state: &UIState) {
@@ -103,11 +55,11 @@ impl MainWindow {
       ui.label("Bottom text");
     });
 
-    self.show_dialogs(ctx);
+    // self.show_dialogs(ctx);
   }
 
   pub fn new(window_target: &EventLoopWindowTarget<EscherEvent>, scale_factor: f32) -> UI {
-    let mut res = UI::new(
+    let (mut res, inner) = SimpleWindow::new(
       window::WindowBuilder::new()
         .with_decorations(false)
         .with_resizable(true)
@@ -117,14 +69,9 @@ impl MainWindow {
           width: 45*16,
           height: 45*9,
         }),
-      None,
       window_target,
       scale_factor
     );
-
-    let mut egui_winit_state = egui_winit::State::new(window_target);
-    egui_winit_state.set_pixels_per_point(scale_factor);
-    let render_state = WgpuState::new(&res.window, scale_factor).unwrap();
 
     let img_hnd = vec![
       res.ctx.load_texture("uv_texture",
@@ -155,8 +102,7 @@ impl MainWindow {
         img_hnd,
         test_var: 0,
         license_status: false,
-        render_state,
-        egui_winit_state,
+        inner
       }
     )));
     res
@@ -175,21 +121,22 @@ impl MainWindow {
 
       ui.menu_button("Help", |ui| {
         if ui.button("License").clicked() {
-          self.license_status = true;
+          // self.license_status = true;
+          event_proxy.send_event(EscherEvent::NewDialog).unwrap()
         }
       });
     });
   }
 
-  pub fn show_dialogs(&mut self, ctx: &egui::Context) {
-    if self.license_status {
-      egui::Window::new("License")
-        .open(&mut self.license_status)
-        .show(ctx, |ui| {
-          ui.label(include_str!("../../LICENSE"));
-        });
-    }
-  }
+  // pub fn show_dialogs(&mut self, ctx: &egui::Context) {
+  //   if self.license_status {
+  //     egui::Window::new("License")
+  //       .open(&mut self.license_status)
+  //       .show(ctx, |ui| {
+  //         ui.label(include_str!("../../LICENSE"));
+  //       });
+  //   }
+  // }
 
 
   // const FPS_EMA_COEFF: f64 = 1./15.;

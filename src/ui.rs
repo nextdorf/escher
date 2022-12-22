@@ -1,6 +1,8 @@
 pub mod event;
 pub mod main;
+pub mod dialogs;
 mod error;
+mod simple;
 mod util;
 
 use std::{collections::{HashMap, HashSet}, time, cmp};
@@ -17,6 +19,8 @@ use egui_winit::{
   }
 };
 
+use self::dialogs::LicenseDialog;
+
 use super::hierarchy::{Entity, Hierarchy, InteriorKind, InteriorRef};
 // use crate::wgpustate::WgpuState;
 
@@ -26,6 +30,7 @@ pub enum EscherEvent {
   RequestRedraw{ id: UIId },
   Rescale(f32),
   Exit(u8),
+  NewDialog,
 }
 
 pub mod constants {
@@ -36,6 +41,7 @@ pub mod constants {
 
 pub enum UIType {
   Main(Box<main::MainWindow>),
+  License(Box<dialogs::LicenseDialog>),
   // Dynamic(Box<dyn Entity>),
 } 
 
@@ -118,21 +124,20 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
 
   fn run(&mut self, state: &UIState, input: &UIInput) -> Option<UIResult> {
     //TODO: Add modifier handling and rescaling.
-    //FIXME: Resizing doesnt work as intended.
     if let Some(ui_impl) = &mut self.ui_impl {
       match ui_impl {
         UIType::Main(main_window) => {
           let main_window = main_window.as_mut();
           match input.kind {
             UIInputKind::Redraw => match main_window.redraw(&self.ctx, &self.window, state, &mut self.control_flow) {
-              main::MainWindowDrawRes::InvaldRenderFrame => todo!(),
-              main::MainWindowDrawRes::NoRedrawScheduled(true) | main::MainWindowDrawRes::RedrawNextFrame(true)
-                | main::MainWindowDrawRes::RedrawScheduled(_) => Some(UIResult::with_new_control_flow(self.get_id())),
-              main::MainWindowDrawRes::NoRedrawScheduled(false) | main::MainWindowDrawRes::RedrawNextFrame(false) =>
+              simple::WindowDrawRes::InvaldRenderFrame => todo!(),
+              simple::WindowDrawRes::NoRedrawScheduled(true) | simple::WindowDrawRes::RedrawNextFrame(true)
+                | simple::WindowDrawRes::RedrawScheduled(_) => Some(UIResult::with_new_control_flow(self.get_id())),
+              simple::WindowDrawRes::NoRedrawScheduled(false) | simple::WindowDrawRes::RedrawNextFrame(false) =>
                 None,
             },
             UIInputKind::WindowEvent(event) => {
-              let egui_winit_state_result = main_window.egui_winit_state.on_event(&self.ctx, &event);
+              let egui_winit_state_result = main_window.inner.egui_winit_state.on_event(&self.ctx, &event);
               let mut drop_window = false;
               if !egui_winit_state_result.consumed {
                 match event {
@@ -167,6 +172,53 @@ impl<'a> Entity<UIId, UIInput<'a>, UIState, UIResult> for UI {
             },
           }
         },
+        
+        UIType::License(license_dialog) => {
+          let license_dialog = license_dialog.as_mut();
+          match input.kind {
+            UIInputKind::Redraw => match license_dialog.redraw(&self.ctx, &self.window, state, &mut self.control_flow) {
+              simple::WindowDrawRes::InvaldRenderFrame => todo!(),
+              simple::WindowDrawRes::NoRedrawScheduled(true) | simple::WindowDrawRes::RedrawNextFrame(true)
+                | simple::WindowDrawRes::RedrawScheduled(_) => Some(UIResult::with_new_control_flow(self.get_id())),
+              simple::WindowDrawRes::NoRedrawScheduled(false) | simple::WindowDrawRes::RedrawNextFrame(false) =>
+                None,
+            },
+            UIInputKind::WindowEvent(event) => {
+              let egui_winit_state_result = license_dialog.inner.egui_winit_state.on_event(&self.ctx, &event);
+              let mut drop_window = false;
+              if !egui_winit_state_result.consumed {
+                match event {
+                  WindowEvent::Resized(PhysicalSize { width, height}) =>
+                  license_dialog.resize(Some(*width), Some(*height), None),
+                  WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size } =>
+                  license_dialog.resize(Some(new_inner_size.width), Some(new_inner_size.height), Some(*scale_factor as _)),
+                  WindowEvent::CloseRequested | WindowEvent::Destroyed => {
+                    drop_window = true
+                  },
+                  _ => {}
+                }
+              }
+              if egui_winit_state_result.repaint {
+                self.window.request_redraw();
+              }
+              if drop_window || egui_winit_state_result.consumed {
+                Some(UIResult {
+                  id: self.get_id(), 
+                  mutate_control_flow: false,
+                  fully_consumed_event: egui_winit_state_result.consumed,
+                  drop: drop_window,
+                })
+              } else {
+                None
+              }
+            },
+            UIInputKind::Resize { width, height, scale } => {
+              license_dialog.resize(width, height, scale);
+              None
+            },
+          }
+        },
+        
       }
     } else {
       None
@@ -286,6 +338,11 @@ impl<'event> Hierarchy<UIId, UI, UIInput<'event>, FullUIInput<'event>, FullUIInp
           },
         }
       },
+      Event::UserEvent(EscherEvent::NewDialog) => {
+        let new_dialog = LicenseDialog::new(input.window_target, constants::ZOOM_100);
+        let id = new_dialog.get_id();
+        self.entities.insert(id, new_dialog);
+      },
       Event::NewEvents(start_cause) => {
         let req_time = match start_cause {
           StartCause::Poll => Some(self.state.current_time),
@@ -338,6 +395,7 @@ impl UI {
     }
   }
 
+  /*
   pub fn redraw(&mut self, state: &UIState) {
     match &mut self.ui_impl {
       Some(UIType::Main(main_window)) => {main_window.redraw(&self.ctx, &self.window, state, &mut self.control_flow);},
@@ -356,7 +414,7 @@ impl UI {
     match &mut self.ui_impl {
       None => false,
       Some(UIType::Main(main_window)) => {
-        let egui_winit_state_result = main_window.egui_winit_state.on_event(&self.ctx, &event);
+        let egui_winit_state_result = main_window.inner.egui_winit_state.on_event(&self.ctx, &event);
         if egui_winit_state_result.consumed {
           match event {
             WindowEvent::Resized(PhysicalSize { width, height}) =>
@@ -371,11 +429,12 @@ impl UI {
       }
     }
   }
-
+  */
 }
 
 
 impl UIHierarchy {
+  /*
   pub fn handle_events(&mut self, event: Event<EscherEvent>, _window_target: &EventLoopWindowTarget<EscherEvent>, control_flow: &mut ControlFlow) {
     match event {
       Event::WindowEvent { window_id, event } => {
@@ -401,6 +460,7 @@ impl UIHierarchy {
       _ => {}
     }
   }
+  */
 
   pub fn new_escher_ui(event_loop: &EventLoop<EscherEvent>, scale_factor: f32) -> Self {
     let main_ui = main::MainWindow::new(&event_loop, scale_factor);
