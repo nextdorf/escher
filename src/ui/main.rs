@@ -14,6 +14,9 @@ use crate::wgpustate::WgpuState;
 
 use super::{EscherEvent, UIState, UIType, UI};
 
+use std::time;
+
+
 pub struct MainWindow {
   pub img_hnd: Vec<TextureHandle>,
   test_var: usize,
@@ -22,18 +25,26 @@ pub struct MainWindow {
   pub(super) egui_winit_state: egui_winit::State,
 }
 
+
+pub enum MainWindowDrawRes {
+  InvaldRenderFrame,
+  NoRedrawScheduled,
+  RedrawNextFrame,
+  RedrawScheduled(time::Duration)
+}
+
 impl MainWindow {
-  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState) {
+  pub fn redraw(&mut self, ctx: &egui::Context, window: &window::Window, state: &UIState) -> MainWindowDrawRes {
 
     self.render_state.update_window_size_bind_group(false);
     let current_frame = match self.render_state.get_current_frame() {
       Ok(frame) => frame,
-      Err(_) => return
+      Err(_) => return MainWindowDrawRes::InvaldRenderFrame
     };
 
     let raw_input = self.egui_winit_state.take_egui_input(window);
     let full_output = ctx.run(raw_input, |ctx| self.ui(ctx, state));
-    let _time_until_repaint = full_output.repaint_after;
+    let time_until_repaint = full_output.repaint_after;
 
     //TODO: construct Result and tell it when to repaint using time_until_repaint
 
@@ -45,6 +56,14 @@ impl MainWindow {
       Some(()) => true,
       None => {eprintln!("Incomplete rendering!"); false}
     };
+
+    if time_until_repaint.is_zero() {
+      MainWindowDrawRes::RedrawNextFrame
+    } else if time_until_repaint == time::Duration::MAX {
+      MainWindowDrawRes::NoRedrawScheduled
+    } else {
+      MainWindowDrawRes::RedrawScheduled(time_until_repaint)
+    }
   }
 
   pub fn resize(&mut self, width: Option<u32>, height: Option<u32>, scale: Option<f32>) {
