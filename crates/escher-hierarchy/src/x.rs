@@ -65,7 +65,7 @@ impl Entity<usize, f64, (), f64> for X {
 }
 
 
-impl Hierarchy<usize, X, f64, (), f64, ()> for HX {
+impl Hierarchy<usize, X, f64, f64, (), f64, (), ()> for HX {
   fn represent(&self, _state_kind: InteriorKind, _entities_kind: InteriorKind) -> (InteriorRef<()>, InteriorRef<HashMap<usize, X>>) {
     (InteriorRef::Owning(()), InteriorRef::AsRef(&self.entities))
   }
@@ -77,6 +77,12 @@ impl Hierarchy<usize, X, f64, (), f64, ()> for HX {
   fn accumulate_results(&mut self, _results: Vec<f64>) -> Result<Option<(Option<HashSet<usize>>, f64)>, ()> {
     Ok(None)
   }
+
+  fn run(&mut self, ids: Option<HashSet<usize>>, input: f64) -> Result<(), ()> {
+    run_hierarchy_default(self, ids, input)
+  }
+
+  
 }
 
 
