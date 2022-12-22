@@ -134,7 +134,7 @@ pub trait Hierarchy<Id, E, Input, FullInput, State, Res, FullRes, ResErr>: Sized
   /// `map FullInput to Input` - `call map_entity_set` - `call accumulate_results` - either
   /// `clean up and done` or `next run`. See `run_hierarchy_default` for a simplified default
   /// implementation.
-  fn run(&mut self, ids: Option<HashSet<Id>>, input: FullInput) -> Result<FullResult, ResErr>;
+  fn run(&mut self, ids: Option<HashSet<Id>>, input: FullInput) -> Result<FullRes, ResErr>;
 
 }
 
