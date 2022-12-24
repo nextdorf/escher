@@ -40,8 +40,6 @@ impl SimpleWindow {
     let full_output = ctx.run(raw_input, |ctx| run_ui(ctx, state));
     let time_until_repaint = full_output.repaint_after;
 
-    //TODO: construct Result and tell it when to repaint using time_until_repaint
-
     self.egui_winit_state.handle_platform_output(window, ctx, full_output.platform_output);
     let paint_jobs = ctx.tessellate(full_output.shapes);
     let texture_delta = full_output.textures_delta;
@@ -78,8 +76,7 @@ impl SimpleWindow {
     let empty_ui = UI::new(
       window_builder,
       None,
-      window_target,
-      scale_factor
+      window_target
     );
 
     let mut egui_winit_state = egui_winit::State::new(window_target);
