@@ -47,14 +47,10 @@ impl MainWindow {
       .show_animated(ctx, self.expand_assets, |ui| {
         egui::ScrollArea::vertical().always_show_scroll(true).show(ui, |ui| {
           ui.horizontal_wrapped(|ui| {
-            // for _ in 0..30 {
-            //   ui.label("text");
-            // }
             for asset in self.asset_manager.iter() {
               if let Ok(asset_lock) = asset.lock() {
-                let tex_handle = asset_lock.get_texture_handle();
                 for _ in 0..10 {
-                  ui.image(tex_handle.id(), vec2(64., 64.));
+                  ui.add(asset_lock.as_widget());
                 }
               }
             }

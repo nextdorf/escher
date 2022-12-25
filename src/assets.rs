@@ -1,10 +1,16 @@
 use std::{collections::{HashMap, self}, sync::{Arc, Mutex}, path::Path, fmt::Debug};
 
-use egui_winit::egui;
+use egui_winit::egui::{self, Widget};
+use epaint::vec2;
 
 pub trait Asset: Debug {
   fn get_name(&self) -> String;
   fn get_texture_handle(&self) -> egui::TextureHandle;
+  fn as_widget<'a: 'b, 'b>(&'a self) -> Box<dyn FnOnce(&mut egui::Ui) -> egui::Response + 'b> {
+    let name = self.get_name();
+    let tex_handle = self.get_texture_handle();
+    Box::new(|ui| asset_ui(name, tex_handle, ui))
+  }
 }
 
 #[derive(Default)]
@@ -55,12 +61,14 @@ impl DummyAsset {
       egui::ColorImage::example(),
       egui::TextureOptions::default()
     );
-    let name = "Sample".to_string();
+    let name = "Sample Sample Sample Sample Sample Sample Sample Sample".to_string();
     DummyAsset {
       name,
       tex_handle,
     }
   }
+
+
 }
 
 impl Asset for DummyAsset {
@@ -71,7 +79,42 @@ impl Asset for DummyAsset {
   fn get_texture_handle(&self) -> egui::TextureHandle {
     self.tex_handle.clone()
   }
+
 }
+
+pub fn asset_ui(name: String, tex_handle: egui::TextureHandle, ui: &mut egui::Ui) -> egui::Response {
+  let img_size = 64.;
+  let label_size = 20.;
+  let (rect, resp) = ui.allocate_exact_size(vec2(img_size, img_size + label_size), egui::Sense::hover());
+
+  let img_rect = egui::Rect { max: egui::pos2(rect.right(), rect.top() + img_size), ..rect };
+  let text_rect = egui::Rect { min: egui::pos2(rect.left(), rect.top() + img_size), ..rect };
+
+  // See egui::Image::ui impl for Widget
+  egui::Image::new(tex_handle.id(), vec2(img_size, img_size))
+    .paint_at(ui, img_rect);
+  // egui::Label::new(self.get_name()).ui(ui);
+
+  // See egui::Label::ui impl for Widget
+  let style = ui.style();
+  let font_id = style.text_styles.get(&egui::TextStyle::Body).unwrap();
+  let text_color = style.visuals.text_color();
+  let job = epaint::text::LayoutJob::simple_singleline(name, font_id.clone(), text_color);
+  let galley = ui.fonts().layout_job(job);
+
+  ui.painter_at(text_rect)
+    .add(epaint::TextShape {
+      pos: text_rect.left_top(),
+      galley,
+      underline: epaint::Stroke::NONE,
+      override_text_color: None,
+      angle: 0.,
+  });
+  
+  // ui.label(text)
+  resp
+}
+
 
 impl Debug for DummyAsset {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
