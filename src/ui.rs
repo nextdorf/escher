@@ -152,4 +152,8 @@ impl UIHierarchy {
 
     Self { state, entities }
   }
+
+  pub fn get_toplevel_id(&self) -> UIId {
+    self.state.toplevel_id
+  } 
 }

@@ -2,7 +2,7 @@
 
 use egui_winit::winit::event_loop::EventLoopBuilder;
 
-use escher::ui;
+use escher::{ui::{self, UIType}, assets::DummyAsset};
 use escher_hierarchy::Hierarchy;
 
 
@@ -14,6 +14,12 @@ fn main() {
     &event_loop,
     ui::constants::ZOOM_100,
   );
+
+  let main_id = ui_hierarchy.get_toplevel_id();
+  let main_ui = ui_hierarchy.access_entity(&main_id).unwrap();
+  if let Some(UIType::Main(main_window)) = &mut main_ui.ui_impl {
+    main_window.asset_manager.add(DummyAsset::load_default(&main_ui.ctx)).unwrap()
+  }
 
   event_loop.run(move |event, window_target, control_flow|
     ui_hierarchy.run(None, ui::FullUIInput { event, window_target, control_flow })

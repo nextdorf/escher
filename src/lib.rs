@@ -4,5 +4,5 @@ pub mod clip;
 pub mod ui;
 pub mod wgpustate;
 pub mod util;
-
+pub mod assets;
 
