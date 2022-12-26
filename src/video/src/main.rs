@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write, path};
 
-use video::{VideoStream, PartialVideoStream, SWS_Scaling, AVPixelFormat, Seek, VideoStreamErr};
+use escher_video::{VideoStream, PartialVideoStream, SWS_Scaling, AVPixelFormat, Seek, VideoStreamErr};
 
 
 fn main() -> Result<(), VideoStreamErr>{

@@ -2,7 +2,8 @@ use egui_winit::{winit::window::Window, egui::{ClippedPrimitive, TexturesDelta, 
 use wgpu::{Device, Queue, Surface, TextureViewDescriptor, CommandEncoderDescriptor, RenderPassDescriptor, util::DeviceExt, SurfaceConfiguration};
 use std::{ops::FnOnce, num::{NonZeroU64, NonZeroU32}};
 
-use crate::util;
+pub mod util;
+
 
 pub struct WgpuState {
   device: Device,
@@ -313,7 +314,7 @@ impl WgpuState {
         let stride0 = (patch_size.width as usize) * bytes_per_pixel;
         
         let padded_pixel_data_store;
-        let (padded_pixel_data, new_stride) = match util::pad_array(
+        let (padded_pixel_data, new_stride) = match crate::util::pad_array(
             pixel_data,
             stride0,
             wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as _,
@@ -397,7 +398,12 @@ impl WgpuState {
 
       let mesh = match primitive {
         Primitive::Mesh(m) => m,
-        Primitive::Callback(_) => {eprintln!("Callback"); return None}, //TODO: not done yet
+        Primitive::Callback(_f) => {
+          //TODO: The callback is backend dependent. Meaning since I directly use wgpu
+          // to render egui, I have to define it myself.
+          eprintln!("Callback");
+          return None
+        },
       };
       let (_texture, bind_group) = self.textures.get(&mesh.texture_id)?;
       

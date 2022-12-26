@@ -110,6 +110,8 @@ pub fn asset_ui(name: String, tex_handle: egui::TextureHandle, ui: &mut egui::Ui
       override_text_color: None,
       angle: 0.,
   });
+
+  // ui.painter().add(shape)
   
   // ui.label(text)
   resp

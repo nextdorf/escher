@@ -24,7 +24,7 @@ bitflags! {
 }
 
 impl VideoStream{
-  pub fn new() -> Self {
+  pub unsafe fn new() -> Self {
     VideoStream {
       fmt_ctx: std::ptr::null_mut(),
       codec_ctx: std::ptr::null_mut(),
@@ -161,7 +161,7 @@ type UnitRes = VSResult<()>;
 
 impl PartialVideoStream {
   pub fn new() -> Self{
-    PartialVideoStream { val: VideoStream::new() }
+    PartialVideoStream { val: unsafe {VideoStream::new()} }
   }
 
   pub fn open_format_context_from_path(mut self, path: &path::Path) -> VSResult<Self> {
@@ -231,7 +231,7 @@ impl PartialVideoStream {
     self.val
   }
 
-  pub fn fmap<T>(self, f: &dyn Fn(&VideoStream) -> VSResult<T>) -> VSResult<T> {
+  pub fn fmap<T>(self, f: impl FnOnce(&VideoStream) -> VSResult<T>) -> VSResult<T> {
     f(&self.val)
   }
 
