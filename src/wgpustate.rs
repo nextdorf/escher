@@ -1,16 +1,19 @@
 use egui_winit::{winit::window::Window, egui::{ClippedPrimitive, TexturesDelta, epaint::ahash::HashMap, TextureId}};
+use epaint::{vec2, Color32, pos2};
 use wgpu::{Device, Queue, Surface, TextureViewDescriptor, CommandEncoderDescriptor, RenderPassDescriptor, util::DeviceExt, SurfaceConfiguration};
 use std::{ops::FnOnce, num::{NonZeroU64, NonZeroU32}};
 
 pub mod util;
-
+mod texture_atlas;
+pub use texture_atlas::TextureAtlas;
 
 pub struct WgpuState {
   device: Device,
   queue: Queue,
   surface: Surface,
   surface_config: SurfaceConfiguration,
-  textures: HashMap<TextureId, (wgpu::Texture, wgpu::BindGroup)>,
+  egui_textures: HashMap<TextureId, (wgpu::Texture, wgpu::BindGroup)>,
+  pub user_textures: TextureAtlas,
 
   window_size_bind_group_layout: wgpu::BindGroupLayout,
   window_size_bind_group: Option<wgpu::BindGroup>,
@@ -86,7 +89,8 @@ impl WgpuState {
       queue,
       surface,
       surface_config,
-      textures: HashMap::default(),
+      egui_textures: HashMap::default(),
+      user_textures: TextureAtlas::default(),
 
       window_size_bind_group_layout,
       window_size_bind_group: None,
@@ -313,31 +317,38 @@ impl WgpuState {
         };
         let stride0 = (patch_size.width as usize) * bytes_per_pixel;
         
-        let padded_pixel_data_store;
-        let (padded_pixel_data, new_stride) = match crate::util::pad_array(
-            pixel_data,
-            stride0,
-            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as _,
-            true ) {
-          Some((data, width)) => {
-            padded_pixel_data_store = data;
-            (padded_pixel_data_store.as_slice(), width)
-          },
-          None => (pixel_data, stride0)
-        };
+        // let padded_pixel_data_store;
+        // let (padded_pixel_data, new_stride) = match crate::util::pad_array(
+        //     pixel_data,
+        //     stride0,
+        //     wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as _,
+        //     true ) {
+        //   Some((data, width)) => {
+        //     padded_pixel_data_store = data;
+        //     (padded_pixel_data_store.as_slice(), width)
+        //   },
+        //   None => (pixel_data, stride0)
+        // };
 
-        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-          label: Some(format!("Buffer for patch {:?}", texture_id).as_str()),
-          contents: padded_pixel_data,
-          usage: wgpu::BufferUsages::COPY_SRC,
-        });
-        let buffer_layout = wgpu::ImageDataLayout {
-          offset: 0,
-          bytes_per_row: NonZeroU32::new(new_stride as _),
-          rows_per_image: NonZeroU32::new(patch_size.height)
-        };
-        // eprintln!("Not sure where to place {:?}...", dbg!(texture_id));
-        assert_eq!(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, buffer_layout.bytes_per_row.unwrap().into());
+        // let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //   label: Some(format!("Buffer for patch {:?}", texture_id).as_str()),
+        //   contents: padded_pixel_data,
+        //   usage: wgpu::BufferUsages::COPY_SRC,
+        // });
+        // let buffer_layout = wgpu::ImageDataLayout {
+        //   offset: 0,
+        //   bytes_per_row: NonZeroU32::new(new_stride as _),
+        //   rows_per_image: NonZeroU32::new(patch_size.height)
+        // };
+        // // eprintln!("Not sure where to place {:?}...", dbg!(texture_id));
+        // assert_eq!(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, buffer_layout.bytes_per_row.unwrap().into());
+        let (buffer, buffer_layout) = util::create_padded_copy_buffer_init(
+          &self.device,
+          Some(format!("Buffer for patch {:?}", texture_id).as_str()),
+          pixel_data,
+          stride0,
+          patch_size.height
+        );
         res_partial.push((texture_id, origin, buffer, buffer_layout, patch_size));
       } else {
         //Expects unmultiplied RGBA and wgsl will see unmultiplied sRGBA
@@ -385,6 +396,101 @@ impl WgpuState {
     let mut vert_inds_buffers = Vec::with_capacity(paint_jobs.len());
 
     for ClippedPrimitive { clip_rect, primitive } in paint_jobs {
+      // let mesh = match primitive {
+      //   Primitive::Mesh(m) => m,
+      //   Primitive::Callback(f) => {
+      //     //TODO: The callback is backend dependent. Meaning since I directly use wgpu
+      //     // to render egui, I have to define it myself.
+      //     if let Some(callback) = f.callback.downcast_ref::<util::EscherWGPUCallbackFn>() {
+      //       match callback {
+      //         util::EscherWGPUCallbackFn::RenderFrame(render_frame) => {},
+      //       }
+      //       continue;
+      //     } else {
+      //       eprintln!("Callback");
+      //       return None
+      //     }
+      //   },
+      // };
+      // let (_texture, bind_group) = self.textures.get(&mesh.texture_id)?;
+      let (vertices, indices, bind_group) = match primitive {
+        Primitive::Mesh(mesh) => {
+          let (_texture, bind_group) = self.egui_textures.get(&mesh.texture_id)?;
+          (mesh.vertices, mesh.indices, bind_group)
+        },
+        Primitive::Callback(f) => {
+          //TODO: The callback is backend dependent. Meaning since I directly use wgpu
+          // to render egui, I have to define it myself.
+          if let Some(callback) = f.callback.downcast_ref::<util::EscherWGPUCallbackFn>() {
+            match callback {
+              util::EscherWGPUCallbackFn::RenderFrame(tex_id, render_frame) => {
+                // let (_texture, bind_group) = self.user_textures.get(&tex_id);
+                let rect = f.rect;
+                let indices = vec![0, 1, 2, 2, 3, 0];
+                let vertices = vec![
+                  epaint::Vertex {pos: rect.left_top(), uv: pos2(0., 0.), color: epaint::Color32::WHITE},
+                  epaint::Vertex {pos: rect.left_bottom(), uv: pos2(0., 1.), color: epaint::Color32::WHITE},
+                  epaint::Vertex {pos: rect.right_bottom(), uv: pos2(1., 1.), color: epaint::Color32::WHITE},
+                  epaint::Vertex {pos: rect.right_top(), uv: pos2(1., 0.), color: epaint::Color32::WHITE},
+                ];
+                let (texture, bind_group) = self.user_textures.get(tex_id)?;
+                if let Some(new_frame) = render_frame {
+                  // let (buffer, buffer_layout, copy_size) = match new_frame.pix_fmt() {
+                  //   escher_video::AVPixelFormat::AV_PIX_FMT_RGB24 => {
+                  //     let (stride, height) = (new_frame.linesize()[0], new_frame.height());
+                  //     let frame_dimensions = wgpu::Extent3d {
+                  //       width: new_frame.width() as _,
+                  //       height: height as _,
+                  //       depth_or_array_layers: 1
+                  //     };
+                  //     let (buffer, layout) = util::create_padded_copy_buffer_init(
+                  //       &self.device,
+                  //       None,
+                  //       new_frame.planes()[0],
+                  //       stride,
+                  //       height as _
+                  //     );
+                  //     (buffer, layout, frame_dimensions)
+                  //   }
+                  //   _ => todo!()
+                  // };
+                  // let copy_src_buffer = wgpu::ImageCopyBuffer { buffer: &buffer, layout: buffer_layout };
+                  // encoder.copy_buffer_to_texture(copy_src_buffer, texture.as_image_copy(), copy_size)
+                  self.queue.write_texture(texture.as_image_copy(), new_frame.planes()[0], new_frame.get_image_data_layout(), new_frame.get_image_size());
+                }
+                (vertices, indices, bind_group)
+              },
+            }
+          } else {
+            eprintln!("Callback");
+            return None
+          }
+        },
+      };
+      
+
+      vertex_buffers.push(self.device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+          label: Some("vertex_buffer for egui"),
+          contents: bytemuck::cast_slice(vertices.as_slice()),
+          usage: wgpu::BufferUsages::VERTEX,
+      }));
+      let vertex_buffer = vertex_buffers.last().unwrap();
+
+      vert_inds_buffers.push(self.device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+          label: Some("vertex_index_buffer for egui"),
+          contents: bytemuck::cast_slice(indices.as_slice()),
+          usage: wgpu::BufferUsages::INDEX,
+      }));
+      let vert_inds_buffer = vert_inds_buffers.last().unwrap();
+
+      let clip_rect_top_left = ((clip_rect.min.x*self.get_surface_scale()) as _, (clip_rect.min.y*self.get_surface_scale()) as _);
+      let clip_rect_bottom_right: (u32, u32) = ((clip_rect.max.x*self.get_surface_scale()) as _, (clip_rect.max.y*self.get_surface_scale()) as _);
+      let clip_rect_size = (clip_rect_bottom_right.0 - clip_rect_top_left.0, clip_rect_bottom_right.1 - clip_rect_top_left.1);
+      let full_size = (self.surface_config.width, self.surface_config.height);
+
+
       let mut render_pass = encoder.begin_render_pass(
         &RenderPassDescriptor {
           label: Some("current_frame_redraw_render_pass"),
@@ -396,39 +502,6 @@ impl WgpuState {
           depth_stencil_attachment: None,
       });
 
-      let mesh = match primitive {
-        Primitive::Mesh(m) => m,
-        Primitive::Callback(_f) => {
-          //TODO: The callback is backend dependent. Meaning since I directly use wgpu
-          // to render egui, I have to define it myself.
-          eprintln!("Callback");
-          return None
-        },
-      };
-      let (_texture, bind_group) = self.textures.get(&mesh.texture_id)?;
-      
-
-      vertex_buffers.push(self.device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-          label: Some("vertex_buffer for egui"),
-          contents: bytemuck::cast_slice(mesh.vertices.as_slice()),
-          usage: wgpu::BufferUsages::VERTEX,
-      }));
-      let vertex_buffer = vertex_buffers.last().unwrap();
-
-      vert_inds_buffers.push(self.device.create_buffer_init(
-        &wgpu::util::BufferInitDescriptor {
-          label: Some("vertex_index_buffer for egui"),
-          contents: bytemuck::cast_slice(mesh.indices.as_slice()),
-          usage: wgpu::BufferUsages::INDEX,
-      }));
-      let vert_inds_buffer = vert_inds_buffers.last().unwrap();
-
-      let clip_rect_top_left = ((clip_rect.min.x*self.get_surface_scale()) as _, (clip_rect.min.y*self.get_surface_scale()) as _);
-      let clip_rect_bottom_right: (u32, u32) = ((clip_rect.max.x*self.get_surface_scale()) as _, (clip_rect.max.y*self.get_surface_scale()) as _);
-      let clip_rect_size = (clip_rect_bottom_right.0 - clip_rect_top_left.0, clip_rect_bottom_right.1 - clip_rect_top_left.1);
-      let full_size = (self.surface_config.width, self.surface_config.height);
-
       render_pass.set_pipeline(&self.surface_update_pipeline);
       if (clip_rect_bottom_right.0 < full_size.0 && clip_rect_bottom_right.1 <= full_size.1) || (clip_rect_bottom_right.0 <= full_size.0 && clip_rect_bottom_right.1 < full_size.1) {
         render_pass.set_scissor_rect(clip_rect_top_left.0, clip_rect_top_left.1, clip_rect_size.0, clip_rect_size.1);
@@ -438,7 +511,7 @@ impl WgpuState {
       render_pass.set_bind_group(1, &window_size_bind_group, &[]);
       render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
       render_pass.set_index_buffer(vert_inds_buffer.slice(..), wgpu::IndexFormat::Uint32);
-      render_pass.draw_indexed(0..mesh.indices.len() as _, 0, 0..1);
+      render_pass.draw_indexed(0..indices.len() as _, 0, 0..1);
     }
     Some(())
   }
@@ -450,7 +523,7 @@ impl WgpuState {
         buffer: &copy_buffer,
         layout: copy_src_layout,
       };
-      let texture = &self.textures.get(&tex_id)?.0;
+      let texture = &self.egui_textures.get(&tex_id)?.0;
       let copy_dst = wgpu::ImageCopyTexture {
         texture,
         mip_level: 0,
@@ -490,7 +563,7 @@ impl WgpuState {
     // eprintln!("New texs: {}, new patches: {}, new paintjobs: {}", new_textures.len(), new_patches.len(), paint_jobs.len());
     if paint_jobs.len() == 0 { eprintln!("No new paintjobs"); }
     for (id, tex, tex_binding) in new_textures {
-      self.textures.insert(id, (tex, tex_binding));
+      self.egui_textures.insert(id, (tex, tex_binding));
     }
 
     //Render deltas
@@ -508,7 +581,7 @@ impl WgpuState {
 
     //Destroy textures
     for texture_id in texture_delta.free.iter() {
-      if let Some((tex, _)) = self.textures.remove(texture_id) {
+      if let Some((tex, _)) = self.egui_textures.remove(texture_id) {
         tex.destroy();
       }
     }
@@ -535,6 +608,47 @@ impl WgpuState {
     }
 
     self.surface.configure(&self.device, &self.surface_config);
+  }
+
+  pub fn new_user_texture(&mut self, size: wgpu::Extent3d, format: wgpu::TextureFormat, data: &[u8]) -> usize {
+    // let texture = self.device.create_texture_with_data(&self.queue, texture_descriptor, data);
+    // let bind_group = self.device.create_bind_group(bind_group_descriptor);
+
+    let texture = self.device.create_texture_with_data(
+      &self.queue,
+      &wgpu::TextureDescriptor {
+        label: None,
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
+      },
+      data
+    );
+
+    // let tex_binding = self.new_surface_update_binding(&texture_id, &tex, wgpu::FilterMode::default(), wgpu::FilterMode::default());
+    let bind_group = self.device.create_bind_group(
+      &wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &self.surface_update_binding_layout,
+        entries: &[
+          wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(
+              &texture.create_view(&wgpu::TextureViewDescriptor::default())),
+          },
+          wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::Sampler(
+              &self.device.create_sampler(&wgpu::SamplerDescriptor::default()
+            )),
+          },
+        ],
+    });
+
+    self.user_textures.insert(texture, bind_group)
   }
 }
 

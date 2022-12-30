@@ -15,7 +15,7 @@ use std::time;
 
 
 pub struct SimpleWindow {
-  render_state: WgpuState,
+  pub(super) render_state: WgpuState,
   pub(super) egui_winit_state: egui_winit::State,
 }
 

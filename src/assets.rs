@@ -85,6 +85,7 @@ impl Asset for DummyAsset {
 pub fn asset_ui(name: String, tex_handle: egui::TextureHandle, ui: &mut egui::Ui) -> egui::Response {
   let img_size = 64.;
   let label_size = 20.;
+  // egui::PaintCallback
   let (rect, resp) = ui.allocate_exact_size(vec2(img_size, img_size + label_size), egui::Sense::hover());
 
   let img_rect = egui::Rect { max: egui::pos2(rect.right(), rect.top() + img_size), ..rect };
