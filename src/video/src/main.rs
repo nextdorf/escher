@@ -15,9 +15,9 @@ fn main() -> Result<(), VideoStreamErr>{
     let stream_idx = 0;
 
     let video_path = path::Path::new(video_path);
-    let vs: VideoStream = Ok(PartialVideoStream::new()).and_then(|pvs|
+    let mut vs: VideoStream = Ok(PartialVideoStream::new()).and_then(|pvs|
       pvs.open_format_context_from_path(video_path)?
-        .open_codec_context(stream_idx, 0, -1)?
+        .open_codec_context(stream_idx, 8, -1)?
         .create_sws_context(1280, 720, AVPixelFormat::AV_PIX_FMT_RGB24, SWS_Scaling::Spline)?
         .create_pkt_frm()?
         .fmapMut(|vs| {
@@ -27,19 +27,31 @@ fn main() -> Result<(), VideoStreamErr>{
         })?
         .try_into()
       ).expect("Videostream could not be created with valid data");
-    let raw_img = vs.decoded_frm();
 
-    let mut f = match File::create(out_path) {
-      Ok(g) => g,
-      Err(_) => return Err(VideoStreamErr::IO)
-    };
-    for plane in raw_img.planes() {
-      match f.write_all(plane) {
-        Ok(()) => (),
-        Err(_) => return Err(VideoStreamErr::IO)
+    if true {
+      let mut _current_frame = vs.decoded_raw_frm();
+      loop {
+        match vs.decode_frames(1, false) {
+          Ok(_) => _current_frame = vs.decoded_raw_frm(),
+          Err(VideoStreamErr::EOF) => break,
+          _ => todo!()
+        }
       }
+      Ok(())
+    } else {
+      let raw_img = vs.decoded_frm();
+      let mut f = match File::create(out_path) {
+        Ok(g) => g,
+        Err(_) => return Err(VideoStreamErr::IO)
+      };
+      for plane in raw_img.planes() {
+        match f.write_all(plane) {
+          Ok(()) => (),
+          Err(_) => return Err(VideoStreamErr::IO)
+        }
+      }
+      f.sync_data().or(Err(VideoStreamErr::IO))
     }
-    f.sync_data().or(Err(VideoStreamErr::IO))
   }
 }
 

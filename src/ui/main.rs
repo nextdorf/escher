@@ -1,4 +1,4 @@
-use std::{sync::Arc, path::Path};
+use std::{sync::Arc, path::Path, ffi::{OsStr, CStr, CString, OsString}};
 
 use egui_winit::{
   egui,
@@ -66,7 +66,7 @@ impl MainWindow {
     egui::CentralPanel::default().show(ctx, |ui| {
       // ui.centered_and_justified(|center_ui| center_ui.label("Video"));
       let (rect, _resp) = ui.allocate_exact_size(vec2(128., 128.), egui::Sense::hover());
-      self.video_stream.as_mut().unwrap().decode_frames(1, true).expect(".");
+      // self.video_stream.as_mut().unwrap().decode_frames(1, true).expect(".");
       ui.painter_at(rect).add(egui::PaintCallback {
         rect,
         callback: Arc::new(EscherWGPUCallbackFn::RenderFrame(
@@ -111,9 +111,9 @@ impl MainWindow {
     // let active_frame = Some(active_frame);
     
     let video_stream: VideoStream = Ok(escher_video::PartialVideoStream::new()).and_then(|pvs| {
-      pvs.open_format_context_from_path(Path::new("/home/next/Gits/escher/local/bunny_1080p_60fps.mp4\0"))?
-        .open_codec_context(0, 0, -1)?
-        .create_sws_context(1280, 720, escher_video::AVPixelFormat::AV_PIX_FMT_RGBA, escher_video::SWS_Scaling::Spline)?
+      pvs.open_format_context_from_path(Path::new("local/bunny_1080p_60fps.mp4"))?
+        .open_codec_context(0, 16, -1)?
+        .create_sws_context(1280, 720, escher_video::AVPixelFormat::AV_PIX_FMT_RGBA, escher_video::SWS_Scaling::Bilinear)?
         .create_pkt_frm()?
         .fmapMut(|vs| {
           vs.seek(2., escher_video::Seek::empty())?;

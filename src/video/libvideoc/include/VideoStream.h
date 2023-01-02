@@ -52,7 +52,10 @@ VideoStreamResult vs_open_format_context_from_path(char *path, AVFormatContext *
 
 VideoStreamResult vs_open_codec_context(AVFormatContext *fmt_ctx, int stream_idx, uint32_t nThreads, int resolution, AVCodecContext **codec_ctx, int *err);
 
-VideoStreamResult vs_create_sws_context(AVCodecContext *codec_ctx, struct SwsContext **sws_ctx,
+VideoStreamResult vs_create_sws_context(struct SwsContext **sws_ctx, int width, int height, enum AVPixelFormat pix_fmt, 
+  int new_width, int new_height, enum AVPixelFormat new_pix_fmt, int flags, const double *param, int *err);
+
+VideoStreamResult vs_create_sws_context_for(AVCodecContext *codec_ctx, struct SwsContext **sws_ctx,
   int new_width, int new_height, enum AVPixelFormat new_pix_fmt, int flags, const double *param, int *err);
 
 VideoStreamResult vs_create_pkt_frm(AVPacket **pkt, AVFrame **frm, AVFrame **swsfrm);

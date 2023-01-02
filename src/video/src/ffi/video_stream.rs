@@ -29,7 +29,6 @@ impl VideoStream{
       RawImageRef::new(self.frm.as_ref().unwrap())
     }
   }
-
 }
 
 

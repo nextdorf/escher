@@ -1,4 +1,5 @@
 pub mod ffi;
+pub mod buffer;
 
 pub use ffi::{
   VideoStream,

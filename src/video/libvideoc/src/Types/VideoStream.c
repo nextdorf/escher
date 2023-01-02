@@ -58,18 +58,23 @@ VideoStreamResult vs_open_codec_context(AVFormatContext *fmt_ctx, int stream_idx
   return vs_success;
 }
 
-VideoStreamResult vs_create_sws_context(AVCodecContext *codec_ctx, struct SwsContext **sws_ctx,
+VideoStreamResult vs_create_sws_context(struct SwsContext **sws_ctx, int width, int height, enum AVPixelFormat pix_fmt, 
   int new_width, int new_height, enum AVPixelFormat new_pix_fmt, int flags, const double *param, int *err){
-  const int width = codec_ctx->width;
-  const int height = codec_ctx->height;
   const int newwidth = new_width >= 0 ? new_width : width;
   const int newheight = new_height >= 0 ? new_height : height;
   *sws_ctx = sws_getContext(
-    width, height, codec_ctx->pix_fmt, 
+    width, height, pix_fmt, 
     newwidth, newheight, new_pix_fmt,
     flags, NULL, NULL, param );
   return *sws_ctx ? vs_success : vs_ffmpeg_errorcode;
 }
+
+VideoStreamResult vs_create_sws_context_for(AVCodecContext *codec_ctx, struct SwsContext **sws_ctx,
+  int new_width, int new_height, enum AVPixelFormat new_pix_fmt, int flags, const double *param, int *err){
+  return vs_create_sws_context(sws_ctx, codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt, new_width,
+    new_height, new_pix_fmt, flags, param, err);
+}
+
 
 VideoStreamResult vs_create_pkt_frm(AVPacket **pkt, AVFrame **frm, AVFrame **swsfrm){
   if(!(pkt && frm && swsfrm))
@@ -83,15 +88,24 @@ VideoStreamResult vs_create_pkt_frm(AVPacket **pkt, AVFrame **frm, AVFrame **sws
 
 
 void vs_free(VideoStream *vstream) {
-  av_frame_unref(vstream->frm);
-  av_frame_unref(vstream->swsfrm);
-  av_frame_free(&(vstream->frm));
-  av_frame_free(&(vstream->swsfrm));
-  av_packet_unref(vstream->pkt);
-  av_packet_free(&vstream->pkt);
-  sws_freeContext(vstream->sws_ctx);
-  avcodec_close(vstream->codec_ctx);
-  avformat_close_input(&(vstream->fmt_ctx));
+  if(vstream->frm) {
+    av_frame_unref(vstream->frm);
+    av_frame_free(&(vstream->frm));
+  }
+  if(vstream->swsfrm) {
+    av_frame_unref(vstream->swsfrm);
+    av_frame_free(&(vstream->swsfrm));
+  }
+  if(vstream->pkt) {
+    av_packet_unref(vstream->pkt);
+    av_packet_free(&(vstream->pkt));
+  }
+  if(vstream->sws_ctx)
+    sws_freeContext(vstream->sws_ctx);
+  if(vstream->codec_ctx)
+    avcodec_close(vstream->codec_ctx);
+  if(vstream->fmt_ctx)
+    avformat_close_input(&(vstream->fmt_ctx));
 }
 
 

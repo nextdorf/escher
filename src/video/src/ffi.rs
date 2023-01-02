@@ -2,7 +2,7 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use std::{path, os::unix::prelude::OsStrExt, slice, };
+use std::{path, slice, ffi::{CString, CStr}};
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -120,7 +120,7 @@ pub enum VideoStreamErr{
   NullReference
 }
 
-fn wrap_VSResult<T>(res: VideoStreamResult, err: i32, x: T) -> Result<T, VideoStreamErr> {
+pub fn wrap_VSResult<T>(res: VideoStreamResult, err: i32, x: T) -> Result<T, VideoStreamErr> {
   match res {
     VideoStreamResult::vs_ffmpeg_errorcode => Err(VideoStreamErr::FFMPEGErr { err }),
     VideoStreamResult::vs_success => Ok(x),
@@ -159,6 +159,17 @@ type VSResult<T> = Result<T, VideoStreamErr>;
 type UnitRes = VSResult<()>;
 // type VideoStreamRes = VSResult<VideoStream>;
 
+
+#[cfg(target_family = "unix")]
+fn c_str_from_os_str(osstr: &std::ffi::OsStr) -> Result<CString, &str> {
+  use std::os::unix::prelude::OsStrExt;
+  CString::new(osstr.as_bytes()).or(Err("Null"))
+}
+#[cfg(not(target_family = "unix"))]
+fn c_str_from_os_str(osstr: &std::ffi::OsStr) -> Result<CString, &str> {
+  Err("Corrently only implemented for Unix")
+}
+
 impl PartialVideoStream {
   pub fn new() -> Self{
     PartialVideoStream { val: unsafe {VideoStream::new()} }
@@ -166,7 +177,10 @@ impl PartialVideoStream {
 
   pub fn open_format_context_from_path(mut self, path: &path::Path) -> VSResult<Self> {
     let fmt_ctx_ptr = (&mut self.val.fmt_ctx) as _;
-    let path_ptr = path.as_os_str().as_bytes().as_ptr() as _;
+    // let path_ptr = path.as_os_str().as_bytes().as_ptr() as _;
+    // let path_cstr = CString::try_from(*path.as_os_str().clone()).unwrap();
+    let path_cstr = c_str_from_os_str(path.as_os_str()).unwrap();
+    let path_ptr = path_cstr.as_ptr() as _;
     let mut err: i32 = 0;
     let res;
     unsafe{
@@ -192,25 +206,13 @@ impl PartialVideoStream {
   pub fn create_sws_context(mut self, new_width: i32, new_height: i32, new_pix_fmt: AVPixelFormat, scaling: SWS_Scaling) -> VSResult<Self>{
     let codec_ctx = self.val.codec_ctx;
     let sws_ctx_ptr = (&mut self.val.sws_ctx) as _;
-    let (flags, param) = match scaling {
-        SWS_Scaling::FastBilinear => (SWS_FAST_BILINEAR, vec![]),
-        SWS_Scaling::Bilinear => (SWS_BILINEAR, vec![]),
-        SWS_Scaling::Bicubic { p1, p2 } => (SWS_BICUBIC, vec![p1, p2]),
-        SWS_Scaling::X => (SWS_X, vec![]),
-        SWS_Scaling::Point => (SWS_POINT, vec![]),
-        SWS_Scaling::Area => (SWS_AREA, vec![]),
-        SWS_Scaling::Bicublin => (SWS_BICUBLIN, vec![]),
-        SWS_Scaling::Gauss { exponent } => (SWS_GAUSS, vec![exponent]),
-        SWS_Scaling::Sinc => (SWS_SINC, vec![]),
-        SWS_Scaling::Lanczos { window_width } => (SWS_LANCZOS, vec![window_width]),
-        SWS_Scaling::Spline => (SWS_SPLINE, vec![]),
-    };
+    let (flags, param) = scaling.into();
     let param = &param[..];
     let param_ptr = if param.len() > 0 { param.as_ptr() } else {std::ptr::null_mut()};
     let mut err: i32 = 0;
     let res;
     unsafe{
-      res = vs_create_sws_context(codec_ctx, sws_ctx_ptr, new_width, new_height, new_pix_fmt, flags as _, param_ptr, (&mut err) as _);
+      res = vs_create_sws_context_for(codec_ctx, sws_ctx_ptr, new_width, new_height, new_pix_fmt, flags as _, param_ptr, (&mut err) as _);
     }
     wrap_VSResult(res, err, self)
   }
@@ -242,3 +244,23 @@ impl PartialVideoStream {
     }
   }
 }
+
+
+impl From<SWS_Scaling> for (std::os::raw::c_uint, Vec<f64>) {
+    fn from(value: SWS_Scaling) -> Self {
+      match value {
+        SWS_Scaling::FastBilinear => (SWS_FAST_BILINEAR, vec![]),
+        SWS_Scaling::Bilinear => (SWS_BILINEAR, vec![]),
+        SWS_Scaling::Bicubic { p1, p2 } => (SWS_BICUBIC, vec![p1, p2]),
+        SWS_Scaling::X => (SWS_X, vec![]),
+        SWS_Scaling::Point => (SWS_POINT, vec![]),
+        SWS_Scaling::Area => (SWS_AREA, vec![]),
+        SWS_Scaling::Bicublin => (SWS_BICUBLIN, vec![]),
+        SWS_Scaling::Gauss { exponent } => (SWS_GAUSS, vec![exponent]),
+        SWS_Scaling::Sinc => (SWS_SINC, vec![]),
+        SWS_Scaling::Lanczos { window_width } => (SWS_LANCZOS, vec![window_width]),
+        SWS_Scaling::Spline => (SWS_SPLINE, vec![]),
+    }
+  }
+}
+
