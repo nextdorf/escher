@@ -13,5 +13,5 @@ pkg-config = "*"
 [dependencies]
 bitflags = "*"
 wgpu = "*"
-
+escher-schedule = { path="../../crates/escher-schedule", version="*" }
 

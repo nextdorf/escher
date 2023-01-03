@@ -161,13 +161,14 @@ type UnitRes = VSResult<()>;
 
 
 #[cfg(target_family = "unix")]
-fn c_str_from_os_str(osstr: &std::ffi::OsStr) -> Result<CString, &str> {
+fn c_string_from_path(path: &path::Path) -> Result<CString, std::ffi::NulError> {
   use std::os::unix::prelude::OsStrExt;
-  CString::new(osstr.as_bytes()).or(Err("Null"))
+  CString::new(path.as_os_str().as_bytes())
 }
 #[cfg(not(target_family = "unix"))]
-fn c_str_from_os_str(osstr: &std::ffi::OsStr) -> Result<CString, &str> {
-  Err("Corrently only implemented for Unix")
+fn c_string_from_path(path: &path::Path) -> Result<CString, std::ffi::NulError> {
+  let s = path.to_string_lossy().to_string();
+  CString::new(s.as_bytes())
 }
 
 impl PartialVideoStream {
@@ -179,7 +180,7 @@ impl PartialVideoStream {
     let fmt_ctx_ptr = (&mut self.val.fmt_ctx) as _;
     // let path_ptr = path.as_os_str().as_bytes().as_ptr() as _;
     // let path_cstr = CString::try_from(*path.as_os_str().clone()).unwrap();
-    let path_cstr = c_str_from_os_str(path.as_os_str()).unwrap();
+    let path_cstr = c_string_from_path(path).unwrap();
     let path_ptr = path_cstr.as_ptr() as _;
     let mut err: i32 = 0;
     let res;

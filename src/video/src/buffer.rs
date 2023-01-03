@@ -1,7 +1,8 @@
 use crate::ffi::{AVFrame, self};
 
-use std::{sync::{Arc, Mutex, mpsc, self}, os::raw, thread::JoinHandle, rc};
+use std::{sync::{Arc, Mutex, mpsc, self}, os::raw, thread::JoinHandle, rc, ops::Deref};
 
+use escher_schedule as schedule;
 
 pub mod frame_protocol {
   use std::sync::{Arc, Mutex};
@@ -12,82 +13,87 @@ pub mod frame_protocol {
     SetSwsContext {new_width: i32, new_height: i32, new_pix_fmt: ffi::AVPixelFormat, width: i32, height: i32, pix_fmt: ffi::AVPixelFormat, flags: u32, param: Arc<Mutex<Vec<f64>>>},
     // Ping(usize),
   }
+  pub enum RequestKind {
+    Plain,
+    Once(Arc<Mutex<bool>>),
+  }
   pub enum Response {
     Ok,
     // Pong(usize),
+    Ready(bool),
   }
+
+  impl Clone for Request {
+    fn clone(&self) -> Self {
+      match self {
+        Self::SetSwsContext { new_width, new_height, new_pix_fmt, width, height, pix_fmt, flags, param } => Self::SetSwsContext { new_width: new_width.clone(), new_height: new_height.clone(), new_pix_fmt: new_pix_fmt.clone(), width: width.clone(), height: height.clone(), pix_fmt: pix_fmt.clone(), flags: flags.clone(), param: param.clone() },
+      }
+    }
+  }
+}
+
+pub enum RequestKind {
+  Specific(usize),
+  All,
+  DoNow,
+  TryNow,
+  MulipleTimes(usize),
+}
+pub enum RequestError {
+  IndexOutOfBounds(frame_protocol::Request),
+  WorkerDied(frame_protocol::Request), 
+  SendError(frame_protocol::Request),
+  NoReadyWorkers(frame_protocol::Request)
 }
 
 pub struct FrameBuffer {
   frames: Vec<Arc<Mutex<Option<AVFrame>>>>,
-  workers: Vec<Option<(mpsc::Sender<frame_protocol::Request>, mpsc::Receiver<frame_protocol::Response>, bool, JoinHandle<()>)>>,
-  weak_ref: sync::Weak<Self>,
-  next_ping_id: usize, //ping pong was a nonsene idea
+  schedule: schedule::Scheduler<frame_protocol::Request, ()>
 }
+
+// type FrameBufferWorkerHandle = schedule::Worker<frame_protocol::Request, ()>;
 
 struct FrameBufferWorker {
   thread_idx: usize,
-  rx: mpsc::Receiver<frame_protocol::Request>,
+  rx: mpsc::Receiver<(frame_protocol::RequestKind, frame_protocol::Request)>,
   tx: mpsc::Sender<frame_protocol::Response>,
   state: WorkerState,
 }
 struct WorkerState {
   sws_ctx: *mut ffi::SwsContext,
 }
-
+impl schedule::Worker<frame_protocol::Request, ()> for WorkerState {
+    fn handle(&mut self, request: frame_protocol::Request, kind: schedule::RequestKind) -> schedule::Response<()> {
+        todo!()
+    }
+}
 
 impl FrameBuffer {
-  pub fn new(&self, n_threads: usize, new_width: i32, new_height: i32, new_pix_fmt: ffi::AVPixelFormat, width: i32, height: i32, pix_fmt: ffi::AVPixelFormat, scaling: ffi::SWS_Scaling) -> Arc<FrameBuffer>
+  pub fn new(&self, num_workers: usize, new_width: i32, new_height: i32, new_pix_fmt: ffi::AVPixelFormat, width: i32, height: i32, pix_fmt: ffi::AVPixelFormat, scaling: ffi::SWS_Scaling) -> Arc<FrameBuffer>
   {
-    use frame_protocol::Request;
-    let (flags, param) = scaling.into();
-    let param = Arc::new(Mutex::new(param));
-    let mut workers = Vec::with_capacity(n_threads);
-    for i in 0..n_threads {
-      let (t_resp, r_resp) = mpsc::channel();
-      let (t_req, thread) = FrameBufferWorker::new(i, t_resp);
-      workers.push(Some((t_req, r_resp, false, thread)));
-    }
-    for w in workers.iter() {
-      let tx = &w.as_ref().unwrap().0;
-      let param = param.clone();
-      tx.send(Request::SetSwsContext { new_width, new_height, new_pix_fmt, width, height, pix_fmt, flags, param }).unwrap();
-    }
-    
-    Arc::new_cyclic(|weak_ref| {
-      Self { frames: Vec::default(), workers, weak_ref: weak_ref.clone(), next_ping_id: 0 }
-    })
+    let schedule = *(schedule::Scheduler::new(
+      num_workers,
+      |_| {WorkerState {sws_ctx: std::ptr::null_mut()}}
+    )).deref();
+    Arc::new(FrameBuffer { frames: Vec::default(), schedule })
   }
 
-  pub fn request(&self, request: frame_protocol::Request){
-    todo!()
+
+  pub fn request(&self, request: frame_protocol::Request, kind: schedule::BroadcastKind) -> Result<(), schedule::RequestError<frame_protocol::Request>> {
+    self.schedule.request(request, kind)
   }
 
   pub fn handle_respones(&mut self) {
-    for w in self.workers.iter_mut() {
-      if let Some((_, rx, is_ready, thread)) = w {
-        if thread.is_finished() {
-          *w = None;
-          continue;
-        } else if *is_ready {
-          continue;
-        } else {
-          match rx.try_recv() {
-            Ok(first_val) => {
-              let iter = std::iter::once(first_val).chain(rx.try_iter());
-              todo!()
-            },
-            Err(mpsc::TryRecvError::Disconnected) => {*w = None},
-            Err(mpsc::TryRecvError::Empty) => {*is_ready = true},
-          }
-        }
-      }
-    }
+    self.schedule.handle_respones(Self::inner_handle_respones).unwrap()
+  }
+
+  fn inner_handle_respones(resp: schedule::Response<()>, tx: &mpsc::Sender<(schedule::RequestKind, frame_protocol::Request)>) -> Result<(), ()> {
+    Ok(())
   }
 }
 
 impl FrameBufferWorker {
-  pub fn new(thread_idx: usize, t_resp: mpsc::Sender<frame_protocol::Response>) -> (mpsc::Sender<frame_protocol::Request>, JoinHandle<()>) {
+  pub fn new(thread_idx: usize, t_resp: mpsc::Sender<frame_protocol::Response>) -> (mpsc::Sender<(frame_protocol::RequestKind, frame_protocol::Request)>, JoinHandle<()>) {
     use frame_protocol::Response;
     let (tx, rx) = mpsc::channel();
     let t = std::thread::spawn(move || {
@@ -108,6 +114,20 @@ impl FrameBufferWorker {
       }
     });
     (rx.recv().unwrap(), t)
+  }
+
+}
+
+impl FrameBufferWorkerHandle {
+  pub fn send(&self, kind: frame_protocol::RequestKind, request: frame_protocol::Request) -> Result<(), RequestError> {
+    match self.tx.send((kind, request)) {
+      Ok(()) => Ok(()),
+      Err(e) => Err(e.into())
+    }
+  }
+
+  pub fn just_send(&self, request: frame_protocol::Request) -> Result<(), RequestError> {
+    self.send(frame_protocol::RequestKind::Plain, request)
   }
 }
 
@@ -135,5 +155,13 @@ impl WorkerState {
     }
   }
 }
+
+
+impl<T> From<mpsc::SendError<(T, frame_protocol::Request)>> for RequestError {
+  fn from(value: mpsc::SendError<(T, frame_protocol::Request)>) -> Self {
+    RequestError::SendError(value.0.1)
+  }
+}
+
 
 
