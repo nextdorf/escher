@@ -1,8 +1,12 @@
-use std::{sync::{Arc, Mutex, mpsc, Weak}, thread::JoinHandle};
+use std::{sync::{Arc, Mutex, mpsc, Weak}, thread::JoinHandle, fmt::Debug};
 
 
 pub enum RequestKind {
   Plain,
+  /// Value indicates whether request still has to be fulfilled. So a worker would try to lock the
+  /// mutex. If that's successful and the value is `true`, that worker is now tasked with the request
+  /// and has to set the value to `false` and immediately unlock the mutex again. If the value is already `false`
+  /// then the task is already assigned to another worker and can be ignored.
   Once(Arc<Mutex<bool>>),
 }
 pub enum Response<T> {
@@ -19,20 +23,22 @@ pub enum BroadcastKind {
   TryNow,
   MulipleTimes(usize),
 }
-pub enum RequestError<T> {
+
+#[derive(Debug)]
+pub enum RequestError<T> where T:Debug {
   IndexInvalid(T),
   WorkerDied(T), 
   SendError(T),
   NoReadyWorkers(T)
 }
 
-pub struct Scheduler<Req, T> {
+pub struct Scheduler<Req, T> where Req: Debug {
   workers: Vec<Option<WorkerHandle<Req, T>>>,
-  weak_ref: Weak<Self>,
+  // weak_ref: Weak<Self>,
   // next_ping_id: usize, //ping pong was a nonsene idea
 }
 
-struct WorkerHandle<Request, T> {
+struct WorkerHandle<Request, T> where Request: Debug {
   tx: mpsc::Sender<(RequestKind, Request)>,
   rx: mpsc::Receiver<Response<T>>,
   is_ready: bool,
@@ -46,8 +52,8 @@ struct WorkerHandle<Request, T> {
 // }
 
 
-impl<Req, T> Scheduler<Req, T> where Req: Send + Clone, T: Send {
-  pub fn new<W, F>(num_workers: usize, worker_init: F) -> Arc<Self>
+impl<Req, T> Scheduler<Req, T> where Req: Send + Clone + Debug, T: Send {
+  pub fn new<W, F>(num_workers: usize, worker_init: F) -> Self
     where W: Worker<Req, T>, F:Fn(usize) -> W + Send + Sync + 'static, Req: 'static, T: 'static
   {
     let mut workers = Vec::with_capacity(num_workers);
@@ -58,9 +64,7 @@ impl<Req, T> Scheduler<Req, T> where Req: Send + Clone, T: Send {
       workers.push(Some(WorkerHandle {tx: t_req, rx: r_resp, is_ready: false, thread}));
     }
     
-    Arc::new_cyclic(|weak_ref| {
-      Self { workers, weak_ref: weak_ref.clone() }
-    })
+    Self { workers }
   }
 
 
@@ -126,14 +130,26 @@ impl<Req, T> Scheduler<Req, T> where Req: Send + Clone, T: Send {
         if thread.is_finished() {
           *w = None;
           continue;
-        } else if *is_ready {
-          continue;
+        // } else if *is_ready {
+        //   continue;
         } else {
           match rx.try_recv() {
             Ok(first_val) => {
+              *is_ready = false;
               let iter = std::iter::once(first_val).chain(rx.try_iter());
-              for w in iter {
-                f(w, tx)?;
+              let mut split_last_iter = crate::SplitLastIter::from_iter(iter);
+              loop {
+                if let Some(resp) = split_last_iter.next() {
+                  f(resp, tx)?;
+                } else {
+                  break
+                }
+              }
+              if let Some(resp) = split_last_iter.unwrap_last() {
+                if let Response::Ready(true) = &resp {
+                  *is_ready = true;
+                }
+                f(resp, tx)?;
               }
             },
             Err(mpsc::TryRecvError::Disconnected) => {*w = None},
@@ -165,24 +181,34 @@ pub fn new_worker<Req, T, W, F>(thread_idx: usize, t_resp: mpsc::Sender<Response
     let (t_req, r_req) = mpsc::channel::<(RequestKind, Req)>();
     tx.send(t_req).unwrap();
     let mut worker = worker_init(thread_idx);
-    drop(worker_init);
+    drop((worker_init, thread_idx));
     t_resp.send(Response::Init).unwrap();
     // let mut worker = Self { thread_idx, rx: r_req, tx: t_resp, state: worker_state};
 
-    loop {
-      match r_req.recv() {
+    let mut handle_response = |resp| {
+      match resp {
         Ok((kind, req)) => match t_resp.send(worker.handle(req, kind)) {
           Ok(()) => {},
           Err(e) => eprintln!("Response Error: {:?}", e)
         },
         Err(e) => eprintln!("Request Error: {:?}", e)
       }
+    };
+
+    loop {
+      for resp in r_req.try_iter() {
+        handle_response(Ok(resp));
+      }
+      t_resp.send(Response::Ready(true)).unwrap();
+      let next_response = r_req.recv();
+      t_resp.send(Response::Ready(false)).unwrap();
+      handle_response(next_response);
     }
   });
   (rx.recv().unwrap(), t)
 }
 
-impl<Req, T> WorkerHandle<Req, T> {
+impl<Req, T> WorkerHandle<Req, T> where Req: Debug {
   pub fn send(&self, kind: RequestKind, request: Req) -> Result<(), RequestError<Req>> {
     match self.tx.send((kind, request)) {
       Ok(()) => Ok(()),
@@ -197,7 +223,7 @@ impl<Req, T> WorkerHandle<Req, T> {
 
 
 
-impl<Req, T> From<mpsc::SendError<(T, Req)>> for RequestError<Req> {
+impl<Req, T> From<mpsc::SendError<(T, Req)>> for RequestError<Req> where Req: Debug {
   fn from(value: mpsc::SendError<(T, Req)>) -> Self {
     RequestError::SendError(value.0.1)
   }
