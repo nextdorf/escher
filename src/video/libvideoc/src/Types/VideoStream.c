@@ -87,26 +87,35 @@ VideoStreamResult vs_create_pkt_frm(AVPacket **pkt, AVFrame **frm, AVFrame **sws
 }
 
 
-void vs_free(VideoStream *vstream) {
-  if(vstream->frm) {
-    av_frame_unref(vstream->frm);
-    av_frame_free(&(vstream->frm));
-  }
-  if(vstream->swsfrm) {
-    av_frame_unref(vstream->swsfrm);
-    av_frame_free(&(vstream->swsfrm));
-  }
-  if(vstream->pkt) {
-    av_packet_unref(vstream->pkt);
-    av_packet_free(&(vstream->pkt));
-  }
-  if(vstream->sws_ctx)
-    sws_freeContext(vstream->sws_ctx);
-  if(vstream->codec_ctx)
-    avcodec_close(vstream->codec_ctx);
-  if(vstream->fmt_ctx)
-    avformat_close_input(&(vstream->fmt_ctx));
-}
+// void vs_free(VideoStream *vstream) {
+//   if(vstream->frm) {
+//     av_frame_unref(vstream->frm);
+//     av_frame_free(&(vstream->frm));
+//   }
+//   // if(vstream->swsfrm) {
+//   //   av_frame_unref(vstream->swsfrm);
+//   //   av_frame_free(&(vstream->swsfrm));
+//   // }
+//   if(vstream->pkt) {
+//     av_packet_unref(vstream->pkt);
+//     av_packet_free(&(vstream->pkt));
+//   }
+//   // if(vstream->sws_ctx)
+//   //   sws_freeContext(vstream->sws_ctx);
+//   if(vstream->codec_ctx)
+//     avcodec_close(vstream->codec_ctx);
+//   if(vstream->fmt_ctx)
+//     avformat_close_input(&(vstream->fmt_ctx));
+// }
+
+// void vf_free(VideoFrame *vframe) {
+//   if(vframe->swsfrm) {
+//     av_frame_unref(vframe->swsfrm);
+//     av_frame_free(&(vframe->swsfrm));
+//   }
+//   if(vframe->sws_ctx)
+//     sws_freeContext(vframe->sws_ctx);
+// }
 
 
 
@@ -190,11 +199,9 @@ VideoStreamResult vs_decode(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx,
     struct SwsContext *sws_ctx, AVFrame *swsfrm, const DecodingDecider *const decider, const DecodingActor *const actor, int *err){
   doAct(DActDecodeInit);
   bool mustDecodePacket = false;
+  const bool can_decode_frame = pkt && frm && (pkt->dts != frm->pkt_dts || frm->pkt_dts == AV_NOPTS_VALUE);
   // if(   nFrames > 0 //DDecideDecodeFrameIdx
-  if(   doDecide(DDecideDecodeFrame)
-    ||  pkt->dts != frm->pkt_dts
-    // ||  pkt->pts != frm->pts
-    ||  frm->pkt_dts == AV_NOPTS_VALUE ) {
+  if(doDecide(DDecideDecodeFrame) && can_decode_frame) {
     do {
       if(mustDecodePacket || doDecide(DDecideDecodePacket)){
         doAct(DActDecodeFmtCtxToPktPrepare);
@@ -287,13 +294,13 @@ VideoStreamResult vs_decode(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx,
   return vs_success;
 }
 
-VideoStreamResult vs_decode_current_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, int *err){
-  return vs_decode_frames(fmt_ctx, codec_ctx, stream, pkt, frm, sws_ctx, swsfrm, 0, err);
-}
+// VideoStreamResult vs_decode_current_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, int *err){
+//   return vs_decode_frames(fmt_ctx, codec_ctx, stream, pkt, frm, sws_ctx, swsfrm, 0, err);
+// }
 
-VideoStreamResult vs_decode_next_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, int *err){
-  return vs_decode_frames(fmt_ctx, codec_ctx, stream, pkt, frm, sws_ctx, swsfrm, 1, err);
-}
+// VideoStreamResult vs_decode_next_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, int *err){
+//   return vs_decode_frames(fmt_ctx, codec_ctx, stream, pkt, frm, sws_ctx, swsfrm, 1, err);
+// }
 
 
 
@@ -306,19 +313,34 @@ void vs_decode_frames_dact_frm(ActorFuncParams) {
   if(*nFrames)
     --(*nFrames);
 }
-VideoStreamResult vs_decode_frames(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx_if_scale, AVFrame *swsfrm, uint64_t nFrames, int *err){
+VideoStreamResult vs_decode_frames(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, uint64_t nFrames, int *err){
   DecodingDecider decider = new_DecodingDecider();
-  decider.decisions[DDecideDecodeFrame] = DDecideFunctional;
-  decider.params[DDecideDecodeFrame] = vs_decode_frames_ddecide;
-  decider.decisions[DDecideDecodePacket] = DDecideFunctional;
-  decider.params[DDecideDecodePacket] = vs_decode_frames_ddecide;
-  decider.decisions[DDecideDecodeSws] = sws_ctx_if_scale ? DDecideTrue : DDecideFalse;
-  decider.params[nDecodingDecisions] = &nFrames;
   DecodingActor actor = new_DecodingActor();
-  actor.actions[DActDecodeCodecCtxToFrmSuccess] = DActFunctional;
-  actor.params[DActDecodeCodecCtxToFrmSuccess] = vs_decode_frames_dact_frm;
-  actor.params[nDecodingActions] = &nFrames;
-  return vs_decode(fmt_ctx, codec_ctx, stream, pkt, frm, sws_ctx_if_scale, swsfrm, &decider, &actor, err);
+  if(nFrames > 0) {
+    decider.decisions[DDecideDecodeFrame] = DDecideFunctional;
+    decider.params[DDecideDecodeFrame] = vs_decode_frames_ddecide;
+    decider.decisions[DDecideDecodePacket] = DDecideFunctional;
+    decider.params[DDecideDecodePacket] = vs_decode_frames_ddecide;
+
+    decider.params[nDecodingDecisions] = &nFrames;
+    actor.actions[DActDecodeCodecCtxToFrmSuccess] = DActFunctional;
+    actor.params[DActDecodeCodecCtxToFrmSuccess] = vs_decode_frames_dact_frm;
+    actor.params[nDecodingActions] = &nFrames;
+  }
+  decider.decisions[DDecideDecodeSws] = sws_ctx ? DDecideTrue : DDecideFalse;
+  return vs_decode(fmt_ctx, codec_ctx, stream, pkt, frm, sws_ctx, swsfrm, &decider, &actor, err);
+}
+
+VideoStreamResult vs_decode_next_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, int *err){
+  return vs_decode_frames(fmt_ctx, codec_ctx, stream, pkt, frm, NULL, NULL, 1, err);
+}
+
+VideoStreamResult vs_decode_current_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, int *err){
+  return vs_decode_frames(fmt_ctx, codec_ctx, stream, pkt, frm, NULL, NULL, 0, err);
+}
+
+VideoStreamResult vf_decode_sws_frame(AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, int *err){
+  return vs_decode_frames(NULL, NULL, NULL, NULL, frm, sws_ctx, swsfrm, 0, err);
 }
 
 

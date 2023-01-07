@@ -45,12 +45,6 @@ struct WorkerHandle<Request, T> where Request: Debug {
   thread: JoinHandle<()>
 }
 
-// struct Worker<Request, T> {
-//   thread_idx: usize,
-//   rx: mpsc::Receiver<(BroadcastKind, Request)>,
-//   tx: mpsc::Sender<Response<T>>,
-// }
-
 
 impl<Req, T> Scheduler<Req, T> where Req: Send + Clone + Debug, T: Send {
   pub fn new<W, F>(num_workers: usize, worker_init: F) -> Self

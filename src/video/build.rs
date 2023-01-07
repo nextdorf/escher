@@ -53,6 +53,21 @@ fn invoke_buildgen(){
     // .header("libvideoc/install/include/renderframe.h")
     //Only public interface to library
     .allowlist_function("vs_.*")
+    .allowlist_function("vf_.*")
+    .allowlist_function("av_buffer_get_ref_count")
+
+    .allowlist_function("avformat_close_input")
+    .allowlist_function("avcodec_close")
+    .allowlist_function("sws_freeContext")
+    .allowlist_function("av_packet_alloc")
+    .allowlist_function("av_packet_unref")
+    .allowlist_function("av_packet_free")
+    .allowlist_function("av_frame_alloc")
+    .allowlist_function("av_frame_ref")
+    .allowlist_function("av_frame_unref")
+    .allowlist_function("av_frame_clone")
+    .allowlist_function("av_frame_free")
+
     .allowlist_type("VideoStream.*")
     .rustified_enum("VideoStreamResult")
     .rustified_enum("DecodingDecision")

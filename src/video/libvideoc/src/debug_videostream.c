@@ -72,29 +72,32 @@ int my_renderframe(char *path, double seconds, int *width, int *height, int *out
   *height = cctx->height;
   if(*outwidth < 0) *outwidth = *width;
   if(*outheight < 0) *outheight = *height;
-  vs_create_sws_context(cctx, &swsctx, *outwidth, *outheight, AV_PIX_FMT_RGB24, SWS_SPLINE, NULL, &err);
+  vs_create_sws_context_for(cctx, &swsctx, *outwidth, *outheight, AV_PIX_FMT_RGB24, SWS_SPLINE, NULL, &err);
 
 
   VideoStream *vstream = malloc(sizeof(VideoStream));
+  VideoFrame *vframe = malloc(sizeof(VideoFrame));
   vstream->fmt_ctx = fctx;
   vstream->codec_ctx = cctx;
   vstream->stream = fctx->streams[idx];
-  // vstream->pkt = av_packet_alloc();
-  // vstream->frm = av_frame_alloc();
-  // vstream->swsfrm = av_frame_alloc();
-  vs_create_pkt_frm(&(vstream->pkt), &(vstream->frm), &(vstream->swsfrm));
-  vstream->sws_ctx = swsctx;
+  vframe->sws_ctx = swsctx;
+  vframe->frm_src = &vstream->frm;
+  vs_create_pkt_frm(&(vstream->pkt), &(vstream->frm), &(vframe->swsfrm));
 
 
   vs_seek_at(vstream->fmt_ctx, vstream->stream, seconds, 0, vstream->codec_ctx, vstream->pkt, vstream->frm, &err);
-  vs_decode_current_frame(vstream->fmt_ctx, vstream->codec_ctx, vstream->stream, vstream->pkt, vstream->frm, vstream->sws_ctx, vstream->swsfrm, &err);
-  const size_t datasize = vstream->swsfrm->height * vstream->swsfrm->linesize[0];
+  // vs_decode_current_frame(vstream->fmt_ctx, vstream->codec_ctx, vstream->stream, vstream->pkt, vstream->frm, vstream->sws_ctx, vstream->swsfrm, &err);
+  vs_decode_current_frame(vstream->fmt_ctx, vstream->codec_ctx, vstream->stream, vstream->pkt, vstream->frm, &err);
+  vs_decode_sws_frame(*vframe->frm_src, vframe->sws_ctx, vframe->swsfrm, &err);
+  const size_t datasize = vframe->swsfrm->height * vframe->swsfrm->linesize[0];
   *rgb = malloc(datasize);
-  memcpy(*rgb, vstream->swsfrm->data[0], datasize);
+  memcpy(*rgb, vframe->swsfrm->data[0], datasize);
 
 
   vs_free(vstream);
+  vf_free(vframe);
   free(vstream);
+  free(vframe);
 
   return err;
 }

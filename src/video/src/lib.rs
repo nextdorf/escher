@@ -3,11 +3,12 @@ pub mod buffer;
 
 pub use ffi::{
   VideoStream,
-  PartialVideoStream,
+  VideoStreamBuilder,
   SWS_Scaling,
   AVPixelFormat,
   Seek,
   VideoStreamErr,
+  VideoFrameContext,
 };
 
 pub use ffi::video_stream::{

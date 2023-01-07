@@ -2,11 +2,15 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use std::{path, slice, ffi::{CString, CStr}};
+use std::{path, ffi::CString};
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+// use VideoFrame as VideoFrameC;
 
 pub mod video_stream;
+pub mod rc;
+mod video_stream_builder;
+pub use video_stream_builder::VideoStreamBuilder;
 
 // #[macro_use]
 use bitflags::bitflags;
@@ -23,30 +27,23 @@ bitflags! {
   }
 }
 
+
+pub struct VideoStream {
+  fmt_ctx: *mut AVFormatContext,
+  codec_ctx: *mut AVCodecContext,
+  stream: *mut AVStream,
+  pkt: *mut AVPacket,
+  frm: rc::RcFrame,
+}
+
+pub struct VideoFrameContext {
+  pub frm_src: rc::RcFrame,
+  pub(crate) sws_ctx: *mut SwsContext,
+  pub(crate) sws_frm: rc::RcFrame,
+}
+
+
 impl VideoStream{
-  pub unsafe fn new() -> Self {
-    VideoStream {
-      fmt_ctx: std::ptr::null_mut(),
-      codec_ctx: std::ptr::null_mut(),
-      stream: std::ptr::null_mut(),
-      pkt: std::ptr::null_mut(),
-      frm: std::ptr::null_mut(),
-      sws_ctx: std::ptr::null_mut(),
-      swsfrm: std::ptr::null_mut()
-    }
-  }
-
-  fn is_valid(&self) -> bool{
-    !(  self.fmt_ctx.is_null()
-    ||  self.codec_ctx.is_null()
-    ||  self.stream.is_null()
-    ||  self.pkt.is_null()
-    ||  self.frm.is_null()
-    ||  self.sws_ctx.is_null()
-    ||  self.swsfrm.is_null()
-    )
-  }
-
   pub fn seek(&mut self, seconds: f64, flags: Seek) -> UnitRes {
     let codec_ctx = if (flags & Seek::NoPreciseMode).is_empty() {
         self.codec_ctx
@@ -62,36 +59,110 @@ impl VideoStream{
     let res;
     unsafe{
       res = vs_seek_at(self.fmt_ctx, self.stream,
-        seconds, flags, codec_ctx, self.pkt, self.frm, (&mut err) as _)
+        seconds, flags, codec_ctx, self.pkt, self.frm.leak_mut(), (&mut err) as _)
     }
     wrap_VSResult(res, err, ())
   }
 
-  pub fn decode_frames(&mut self, n: u64, apply_sws_ctx: bool) -> UnitRes {
-    let (sws_ctx, swsfrm) = if apply_sws_ctx {
-      (self.sws_ctx, self.swsfrm)
-    } else {
-      (std::ptr::null_mut(), std::ptr::null_mut())
+  pub fn decode_frames(&mut self, n: u64) -> UnitRes {
+    let mut err = 0;
+    let res = unsafe{
+      let (sws_ctx, swsfrm) = (std::ptr::null_mut(), std::ptr::null_mut());
+      vs_decode_frames(self.fmt_ctx, self.codec_ctx, self.stream, self.pkt, self.frm.leak_mut(), sws_ctx, swsfrm, n, &mut err)
     };
-    let mut err: i32 = 0;
-    let res;
-    unsafe{
-      res = vs_decode_frames(self.fmt_ctx, self.codec_ctx, self.stream, self.pkt, self.frm,
-        sws_ctx, swsfrm, n, (&mut err) as _);
-    }
     wrap_VSResult(res, err, ())
   }
 
+  pub fn get_frm(&self) -> rc::RcFrame {
+    self.frm.clone()
+  }
 }
 
 impl Drop for VideoStream{
   fn drop(&mut self) {
     unsafe {
-      vs_free(self)
+      let mut frm = self.frm.leak_mut();
+      if !frm.is_null() {
+        av_frame_unref(frm);
+        av_frame_free(&mut frm);
+      }
+      if !self.pkt.is_null() {
+        av_packet_unref(self.pkt);
+        av_packet_free(&mut self.pkt);
+      }
+      if !self.codec_ctx.is_null() {
+        avcodec_close(self.codec_ctx);
+      }
+      if !self.fmt_ctx.is_null() {
+        avformat_close_input(&mut self.fmt_ctx);
+      }
     }
   }
 }
 
+
+impl VideoFrameContext {
+  pub fn new(src: rc::RcFrame) -> Self {
+    let sws_frm = rc::RcFrame::wrap_raw(unsafe{av_frame_alloc()});
+    Self { frm_src: src, sws_ctx: std::ptr::null_mut(), sws_frm }
+  }
+  pub fn new_init(src: rc::RcFrame, new_width: i32, new_height: i32, new_pix_fmt: AVPixelFormat, width: i32, height: i32, pix_fmt: AVPixelFormat, scaling: SWS_Scaling) -> VSResult<Self> {
+    let mut res = Self::new(src);
+    res.replace_sws_ctx(new_width, new_height, new_pix_fmt, width, height, pix_fmt, scaling)
+      .and(Ok(res))
+  }
+
+  pub fn replace_sws_ctx(&mut self, new_width: i32, new_height: i32, new_pix_fmt: AVPixelFormat, width: i32, height: i32, pix_fmt: AVPixelFormat, scaling: SWS_Scaling) -> UnitRes {
+    let mut err = 0;
+    let mut sws_ctx = std::ptr::null_mut();
+    let res = unsafe {
+      let (flags, param) = scaling.into();
+      let param = if param.len()>0 {
+        param[..].as_ptr()
+      } else {
+        std::ptr::null()
+      };
+      vs_create_sws_context(&mut sws_ctx, width, height, pix_fmt, new_width, new_height, new_pix_fmt, flags as _, param, &mut err)
+    };
+    match wrap_VSResult(res, err, sws_ctx) {
+      Ok(sws_ctx) => {
+        // let sws_frm = rc::RcFrame::wrap_raw(unsafe{av_frame_alloc()});
+        // Ok(Self { frm_src: src, sws_ctx, sws_frm })
+        self.sws_ctx = sws_ctx;
+        Ok(())
+      },
+      Err(err) => Err(err)
+    }
+  }
+
+  pub fn decode(&mut self) -> UnitRes {
+    let mut err = 0;
+    let res = unsafe {
+      vf_decode_sws_frame(self.frm_src.leak_mut(), self.sws_ctx, self.sws_frm.leak_mut(), &mut err)
+    };
+    wrap_VSResult(res, err, ())
+  }
+}
+
+impl Drop for VideoFrameContext {
+  fn drop(&mut self) {
+    unsafe {
+      // drop(self.frm_src);
+      if !self.sws_ctx.is_null() {
+        sws_freeContext(self.sws_ctx);
+      }
+      let mut sws_frm = std::mem::replace(&mut self.sws_frm, rc::RcFrame::wrap_null());
+      av_frame_free(&mut sws_frm.leak_mut())
+      // if !self.sws_frm.is_null() {
+      //   av_frame_unref(self.sws_frm);
+      //   av_frame_free(&mut self.sws_frm);
+      // }
+    }
+  }
+}
+
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum SWS_Scaling {
   FastBilinear,
   Bilinear,
@@ -137,24 +208,6 @@ pub fn wrap_VSResult<T>(res: VideoStreamResult, err: i32, x: T) -> Result<T, Vid
 }
 
 
-pub struct PartialVideoStream {
-  val: VideoStream
-}
-
-impl TryFrom<PartialVideoStream> for VideoStream {
-  type Error = VideoStreamErr;
-
-  fn try_from(pvs: PartialVideoStream) -> Result<Self, Self::Error> {
-    let vs = pvs.val;
-    if vs.is_valid() {
-      Ok(vs)
-    } else {
-      Err(VideoStreamErr::NullReference)
-    }
-  }
-}
-
-
 type VSResult<T> = Result<T, VideoStreamErr>;
 type UnitRes = VSResult<()>;
 // type VideoStreamRes = VSResult<VideoStream>;
@@ -169,81 +222,6 @@ fn c_string_from_path(path: &path::Path) -> Result<CString, std::ffi::NulError> 
 fn c_string_from_path(path: &path::Path) -> Result<CString, std::ffi::NulError> {
   let s = path.to_string_lossy().to_string();
   CString::new(s.as_bytes())
-}
-
-impl PartialVideoStream {
-  pub fn new() -> Self{
-    PartialVideoStream { val: unsafe {VideoStream::new()} }
-  }
-
-  pub fn open_format_context_from_path(mut self, path: &path::Path) -> VSResult<Self> {
-    let fmt_ctx_ptr = (&mut self.val.fmt_ctx) as _;
-    // let path_ptr = path.as_os_str().as_bytes().as_ptr() as _;
-    // let path_cstr = CString::try_from(*path.as_os_str().clone()).unwrap();
-    let path_cstr = c_string_from_path(path).unwrap();
-    let path_ptr = path_cstr.as_ptr() as _;
-    let mut err: i32 = 0;
-    let res;
-    unsafe{
-      res = vs_open_format_context_from_path(path_ptr, fmt_ctx_ptr, (&mut err) as _);
-    }
-    wrap_VSResult(res, err, self)
-  }
-
-  pub fn open_codec_context(mut self, stream_idx: i32, nThreads: u32, resolution: i32) -> VSResult<Self>{
-    let fmt_ctx = self.val.fmt_ctx;
-    let codec_ctx_ptr = (&mut self.val.codec_ctx) as _;
-    let mut err: i32 = 0;
-    let res;
-    unsafe{
-      let streams = slice::from_raw_parts_mut((*self.val.fmt_ctx).streams, (*self.val.fmt_ctx).nb_streams as _);
-      self.val.stream = streams[stream_idx as usize];
-  
-      res = vs_open_codec_context(fmt_ctx, stream_idx, nThreads, resolution, codec_ctx_ptr, (&mut err) as _);
-    }
-    wrap_VSResult(res, err, self)
-  }
-
-  pub fn create_sws_context(mut self, new_width: i32, new_height: i32, new_pix_fmt: AVPixelFormat, scaling: SWS_Scaling) -> VSResult<Self>{
-    let codec_ctx = self.val.codec_ctx;
-    let sws_ctx_ptr = (&mut self.val.sws_ctx) as _;
-    let (flags, param) = scaling.into();
-    let param = &param[..];
-    let param_ptr = if param.len() > 0 { param.as_ptr() } else {std::ptr::null_mut()};
-    let mut err: i32 = 0;
-    let res;
-    unsafe{
-      res = vs_create_sws_context_for(codec_ctx, sws_ctx_ptr, new_width, new_height, new_pix_fmt, flags as _, param_ptr, (&mut err) as _);
-    }
-    wrap_VSResult(res, err, self)
-  }
-
-  pub fn create_pkt_frm(mut self) -> VSResult<Self> {
-    let pkt_ptr = (&mut self.val.pkt) as _;
-    let frm_ptr = (&mut self.val.frm) as _;
-    let swsfrm_ptr = (&mut self.val.swsfrm) as _;
-    let res;
-    unsafe{
-      res = vs_create_pkt_frm(pkt_ptr, frm_ptr, swsfrm_ptr);
-    }
-    wrap_VSResult(res, -1, self)
-  }
-
-  pub fn with_current_frame(mut self) -> VideoStream{
-    self.val.decode_frames(0, true).expect("PartialVideoStream wasn't fully initialized before casting it to VideoStream");
-    self.val
-  }
-
-  pub fn fmap<T>(self, f: impl FnOnce(&VideoStream) -> VSResult<T>) -> VSResult<T> {
-    f(&self.val)
-  }
-
-  pub fn fmapMut(mut self, f: impl Fn(&mut VideoStream) -> UnitRes) -> VSResult<Self> {
-    match f(&mut self.val) {
-      Ok(()) => Ok(PartialVideoStream { val: self.val }),
-      Err(e) => Err(e)
-    }
-  }
 }
 
 

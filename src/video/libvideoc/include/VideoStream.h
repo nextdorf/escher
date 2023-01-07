@@ -10,20 +10,28 @@
 #include "DecodingDecision.h"
 
 
-/** <div rustbindgen private>
- * <div rustbindgen nocopy>
-*/
-struct VideoStream
-{
-  AVFormatContext *fmt_ctx;
-  AVCodecContext *codec_ctx;
-  AVStream *stream;
+// /** <div rustbindgen private>
+//  * <div rustbindgen nocopy>
+// */
+// struct VideoStream {
+//   AVFormatContext *fmt_ctx;
+//   AVCodecContext *codec_ctx;
+//   AVStream *stream;
 
-  AVPacket *pkt;
-  AVFrame *frm;
-  struct SwsContext *sws_ctx;
-  AVFrame *swsfrm;
-};
+//   AVPacket *pkt;
+//   AVFrame *frm;
+//   // struct SwsContext *sws_ctx;
+//   // AVFrame *swsfrm;
+// };
+
+// /** <div rustbindgen private>
+//  * <div rustbindgen nocopy>
+// */
+// struct VideoFrame {
+//   AVFrame *const *frm_src;
+//   struct SwsContext *sws_ctx;
+//   AVFrame *swsfrm;
+// };
 
 enum VideoStreamResult{
   vs_ffmpeg_errorcode = -1,
@@ -44,7 +52,8 @@ enum VideoStreamResult{
   vs_null_reference,
 };
 
-typedef struct VideoStream VideoStream;
+// typedef struct VideoStream VideoStream;
+// typedef struct VideoFrame VideoFrame;
 typedef enum VideoStreamResult VideoStreamResult;
 
 
@@ -60,7 +69,8 @@ VideoStreamResult vs_create_sws_context_for(AVCodecContext *codec_ctx, struct Sw
 
 VideoStreamResult vs_create_pkt_frm(AVPacket **pkt, AVFrame **frm, AVFrame **swsfrm);
 
-void vs_free(VideoStream *vstream);
+// void vs_free(VideoStream *vstream);
+// void vf_free(VideoFrame *vframe);
 
 
 /// @brief Seek position in stream by combining a fast mode (seek keyframes) in compressed stream
@@ -97,10 +107,13 @@ VideoStreamResult vs_seek_at(AVFormatContext *fmt_ctx, AVStream *stream, double 
 VideoStreamResult vs_decode_frames(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx_if_scale, AVFrame *swsfrm, uint64_t nFrames, int *err);
 
 /// @brief See vs_decode_frames for nFrames = 0
-VideoStreamResult vs_decode_current_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx_if_scale, AVFrame *swsfrm, int *err);
+VideoStreamResult vs_decode_current_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, int *err);
 
 /// @brief See vs_decode_frames for nFrames = 1
-VideoStreamResult vs_decode_next_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx_if_scale, AVFrame *swsfrm, int *err);
+VideoStreamResult vs_decode_next_frame(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, int *err);
+
+/// @brief See vs_decode_frames for nFrames = 0
+VideoStreamResult vf_decode_sws_frame(AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, int *err);
 
 VideoStreamResult vs_decode(AVFormatContext *fmt_ctx, AVCodecContext *codec_ctx, AVStream *stream, AVPacket *pkt, AVFrame *frm, struct SwsContext *sws_ctx, AVFrame *swsfrm, const DecodingDecider *const decider, const DecodingActor *const actor, int *err);
 

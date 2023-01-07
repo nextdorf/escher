@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write, path};
 
-use escher_video::{VideoStream, PartialVideoStream, SWS_Scaling, AVPixelFormat, Seek, VideoStreamErr};
+use escher_video::{VideoStream, VideoStreamBuilder, SWS_Scaling, AVPixelFormat, Seek, VideoStreamErr};
 
 
 fn main() -> Result<(), VideoStreamErr>{
@@ -15,23 +15,33 @@ fn main() -> Result<(), VideoStreamErr>{
     let stream_idx = 0;
 
     let video_path = path::Path::new(video_path);
-    let mut vs: VideoStream = Ok(PartialVideoStream::new()).and_then(|pvs|
-      pvs.open_format_context_from_path(video_path)?
-        .open_codec_context(stream_idx, 8, -1)?
-        .create_sws_context(1280, 720, AVPixelFormat::AV_PIX_FMT_RGB24, SWS_Scaling::Spline)?
-        .create_pkt_frm()?
-        .fmapMut(|vs| {
-          vs.seek(skip, Seek::empty())?;
-          vs.decode_frames(0, true)?;
-          Ok(())
-        })?
-        .try_into()
-      ).expect("Videostream could not be created with valid data");
+    // let mut vs: VideoStream = Ok(PartialVideoStream::new()).and_then(|pvs|
+    //   pvs.open_format_context_from_path(video_path)?
+    //     .open_codec_context(stream_idx, 8, -1)?
+    //     .create_sws_context(1280, 720, AVPixelFormat::AV_PIX_FMT_RGB24, SWS_Scaling::Spline)?
+    //     .create_pkt_frm()?
+    //     .fmapMut(|vs| {
+    //       vs.seek(skip, Seek::empty())?;
+    //       vs.decode_frames(0, true)?;
+    //       Ok(())
+    //     })?
+    //     .try_into()
+    //   ).expect("Videostream could not be created with valid data");
+    let mut vs = VideoStreamBuilder::default()
+      .set_path(video_path).unwrap()
+      .set_threads(8)
+      .set_stream_idx(stream_idx)
+      .set_resolution(-1)
+      .finish()
+      .expect("Videostream could not be created with valid data");
+    vs.seek(skip, Seek::empty())?;
+    return Ok(());
 
     if true {
       let mut _current_frame = vs.decoded_raw_frm();
       loop {
-        match vs.decode_frames(1, false) {
+        // match vs.decode_frames(1, false) {
+        match vs.decode_frames(1) {
           Ok(_) => _current_frame = vs.decoded_raw_frm(),
           Err(VideoStreamErr::EOF) => break,
           _ => todo!()

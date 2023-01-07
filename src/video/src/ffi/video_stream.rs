@@ -20,13 +20,15 @@ pub struct RawImageRef<'a> {
 impl VideoStream{
   pub fn decoded_frm(&self) -> RawImageRef {
     unsafe {
-      RawImageRef::new(self.swsfrm.as_ref().unwrap())
+      todo!()
+      // RawImageRef::new(self.swsfrm.as_ref().unwrap())
     }
   }
 
   pub fn decoded_raw_frm(&self) -> RawImageRef {
     unsafe {
-      RawImageRef::new(self.frm.as_ref().unwrap())
+      todo!()
+      // RawImageRef::new(self.frm.as_ref().unwrap())
     }
   }
 }

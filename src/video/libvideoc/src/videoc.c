@@ -12,7 +12,3 @@ uint8_t *genSomeData(const size_t len){
 void freeData(uint8_t *data){
   free(data);
 }
-
-void unknown_fn(){
-  printf("Don't reverse engineer me, I'm shy");
-}
