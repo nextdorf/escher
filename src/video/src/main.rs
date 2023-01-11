@@ -1,9 +1,10 @@
 use std::{fs::File, io::Write, path};
 
-use escher_video::{VideoStream, VideoStreamBuilder, SWS_Scaling, AVPixelFormat, Seek, VideoStreamErr};
+use escher_video::{VideoStream, VideoStreamBuilder, SWS_Scaling, AVPixelFormat, Seek, VideoStreamErr, buffer::FrameBuffer};
 
 
 fn main() -> Result<(), VideoStreamErr>{
+
   let args: Vec<String> = std::env::args().collect();
   if args.len() < 3 || args.len() > 4{
     println!("Usage: {} video_path out_path [skip = 2m]", args[0]);
@@ -35,9 +36,13 @@ fn main() -> Result<(), VideoStreamErr>{
       .finish()
       .expect("Videostream could not be created with valid data");
     vs.seek(skip, Seek::empty())?;
-    return Ok(());
+    // return Ok(());
 
     if true {
+      let buffer = FrameBuffer::new(8,
+        1280, 720, AVP, width, height, pix_fmt, scaling)
+      Ok(())
+    } else if true {
       let mut _current_frame = vs.decoded_raw_frm();
       loop {
         // match vs.decode_frames(1, false) {

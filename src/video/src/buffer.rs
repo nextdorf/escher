@@ -47,7 +47,7 @@ pub use schedule::BroadcastKind;
 pub type RequestError = schedule::RequestError<frame_protocol::Request>;
 
 pub struct FrameBuffer {
-  frames: Vec<Arc<Mutex<Option<RcFrame>>>>,
+  pub frames: Vec<Arc<Mutex<Option<RcFrame>>>>,
   scheduler: schedule::Scheduler<frame_protocol::Request, ()>
 }
 
@@ -58,11 +58,13 @@ struct WorkerState {
 }
 
 impl FrameBuffer {
-  pub fn new(&self, num_workers: usize, new_width: i32, new_height: i32, new_pix_fmt: ffi::AVPixelFormat, width: i32, height: i32, pix_fmt: ffi::AVPixelFormat, scaling: ffi::SWS_Scaling) -> Arc<Self>
+  pub fn new(src: &RcFrame, num_workers: usize, new_width: i32, new_height: i32, new_pix_fmt: ffi::AVPixelFormat, width: i32, height: i32, pix_fmt: ffi::AVPixelFormat, scaling: ffi::SWS_Scaling) -> Arc<Self>
   {
     use frame_protocol::Request;
+    let src: &'static RcFrame = unsafe{std::mem::transmute(src)};
     let scheduler = schedule::Scheduler::new(num_workers, |_| WorkerState {
-      vframe_ctx: VideoFrameContext::new(RcFrame::wrap_null())
+      // vframe_ctx: VideoFrameContext::new(RcFrame::wrap_null())
+      vframe_ctx: VideoFrameContext::new(src.clone())
     });
     // let (flags, param) = scaling.into();
     for i in 0..num_workers {
@@ -72,7 +74,8 @@ impl FrameBuffer {
         BroadcastKind::Specific(i)
       ).unwrap();
     }
-    Arc::new(Self { frames: Vec::default(), scheduler })
+    let res = Arc::new(Self { frames: Vec::default(), scheduler });
+    res
   }
 
 
